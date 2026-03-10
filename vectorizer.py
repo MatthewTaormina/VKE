@@ -127,11 +127,11 @@ def vectorize_image(input_path, output_path, block_size=10, max_block=32):
         bound_y = nh / 2.0
         
         kernel = {
-            'x': round(float(cx), 2),
-            'y': round(float(cy), 2),
+            'x': float(np.round(cx, 2)),
+            'y': float(np.round(cy, 2)),
             'color': color.astype(int).tolist(),
-            'angle': angle_deg,
-            'bounds': [round(float(-bound_x), 2), round(float(-bound_y), 2), round(float(bound_x), 2), round(float(bound_y), 2)]
+            'angle': float(np.round(angle_deg, 2)),
+            'bounds': [float(np.round(-bound_x, 2)), float(np.round(-bound_y, 2)), float(np.round(bound_x, 2)), float(np.round(bound_y, 2))]
         }
         kernels.append(kernel)
 
@@ -148,27 +148,61 @@ def vectorize_image(input_path, output_path, block_size=10, max_block=32):
     }
     
     if output_path.endswith('.vkb'):
-        print(f"Compressing to VKB2 binary: {output_path}...")
+        print(f"Compressing to VKB6 binary: {output_path}...")
         with gzip.open(output_path, "wb") as f:
-            # VKB2 Header: 4s (VKB2), H (w), H (h), B B B B (bg_rgba), I (count) = 16 bytes
-            f.write(struct.pack('<4sHHBBBBI', b'VKB2', w, h, bg_color[0], bg_color[1], bg_color[2], 255, len(kernels)))
+            # VKB6 Header: 4s (VKB6), H (w), H (h), B B B B (bg_rgba), I (total_count) = 16 bytes
+            f.write(struct.pack('<4sHHBBBBI', b'VKB6', w, h, bg_color[0], bg_color[1], bg_color[2], 255, len(kernels)))
             
-            # VKB2 Kernels: H H (x,y), H H (hw,hh), B B B B B B (r,g,b,alpha,decay,theta) = 14 bytes per kernel
+            # Group kernels by 8-bit prefix of 16-bit quantized XY
+            groups = {}
             for k in kernels:
-                # Normalize geometry to uint16 (0-65535) using round to minimize bias
+                # 16-bit quantization (0-65535)
                 xq = int(np.clip(np.round(k['x'] / w * 65535), 0, 65535))
                 yq = int(np.clip(np.round(k['y'] / h * 65535), 0, 65535))
-                hwq = int(np.clip(np.round(k['bounds'][2] / w * 65535), 0, 65535))
-                hhq = int(np.clip(np.round(k['bounds'][3] / h * 65535), 0, 65535))
                 
-                # Colors
-                r, g, b = k['color']
-                alpha = int(k.get('alpha', 1.0) * 255)
-                decay = int(k.get('clamp_decay', 0.0) * 255)
-                theta = int((k['angle'] / 360.0) * 255.0)
+                px, sx = xq >> 8, xq & 0xFF
+                py, sy = yq >> 8, yq & 0xFF
                 
-                f.write(struct.pack('<HHHHBBBBBB', xq, yq, hwq, hhq, r, g, b, alpha, decay, theta))
-        print(f"Saved VKB2 binary scene to {output_path}")
+                prefix = (px, py)
+                if prefix not in groups:
+                    groups[prefix] = []
+                groups[prefix].append((sx, sy, k))
+            
+            for (px, py), k_list in groups.items():
+                f.write(struct.pack('<BBH', px, py, len(k_list)))
+                for sx, sy, k in k_list:
+                    # Determine flags
+                    flags = 0
+                    
+                    # Use ceil to ensure quantized bounding box always covers the source pixels
+                    hwq = int(np.clip(np.ceil(k['bounds'][2] / w * 65535), 0, 65535))
+                    hhq = int(np.clip(np.ceil(k['bounds'][3] / h * 65535), 0, 65535))
+                    # Default is now something unlikely to collide
+                    if hwq != 1 or hhq != 1: flags |= 1
+                    
+                    rgb = k['color']
+                    if rgb[0] != 255 or rgb[1] != 255 or rgb[2] != 255: flags |= 2
+                    
+                    alpha = int(k.get('alpha', 1.0) * 255)
+                    if alpha != 255: flags |= 4
+                    
+                    decay = int(k.get('clamp_decay', 0.0) * 255)
+                    if decay != 0: flags |= 8
+                    
+                    theta = int((k['angle'] / 360.0) * 255.0)
+                    if theta != 0: flags |= 16
+                    
+                    # Pack record
+                    f.write(struct.pack('<B', flags))
+                    f.write(struct.pack('<BB', sx, sy))
+                    
+                    if flags & 1: f.write(struct.pack('<HH', hwq, hhq))
+                    if flags & 2: f.write(struct.pack('<BBB', rgb[0], rgb[1], rgb[2]))
+                    if flags & 4: f.write(struct.pack('<B', alpha))
+                    if flags & 8: f.write(struct.pack('<B', decay))
+                    if flags & 16: f.write(struct.pack('<B', theta))
+                    
+        print(f"Saved VKB6 binary scene to {output_path}")
     else:
         with open(output_path, "w") as f:
             json.dump(scene, f, indent=2)
@@ -178,8 +212,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="VKE Image Vectorizer")
     parser.add_argument("input_image", help="Path to input image (PNG/JPG)")
     parser.add_argument("output_json", help="Path to output VKE JSON file")
-    parser.add_argument("--block", type=int, default=8, help="Pixel size of each sampled block (default: 8)")
-    parser.add_argument("--max_block", type=int, default=32, help="Maximum pixel size of a low-detail block (default: 32)")
+    parser.add_argument("--block", type=int, default=7, help="Minimum pixel size of each sampled block (default: 7)")
+    parser.add_argument("--max_block", type=int, default=30, help="Maximum pixel size of a low-detail block (default: 30)")
     
     args = parser.parse_args()
     vectorize_image(args.input_image, args.output_json, args.block, args.max_block)

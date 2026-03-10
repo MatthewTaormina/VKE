@@ -67,15 +67,22 @@ def process_vke_scene(scene_data, width, height, bg_color):
                 k_copy['angle'] = k_copy.get('angle', 0) + group_angle
                 all_kernels.append(k_copy)
 
+        layer_defaults = layer.get('defaults', {})
         for kernel_def in all_kernels:
-            # Resolve template
-            template_name = kernel_def.get('template')
+            # Resolve template -> layer_defaults -> kernel_def
             kernel = {}
+            template_name = kernel_def.get('template')
             if template_name and template_name in templates:
                 kernel.update(templates[template_name])
+            
+            # Layer-level defaults
+            for k, v in layer_defaults.items():
+                if k not in kernel:
+                    kernel[k] = v
+            
             kernel.update(kernel_def)
 
-            # Properties
+            # Properties with cascading fallbacks
             kx = kernel.get('x', width / 2)
             ky = kernel.get('y', height / 2)
             angle_deg = kernel.get('angle', 0)
@@ -90,14 +97,18 @@ def process_vke_scene(scene_data, width, height, bg_color):
             shift = kernel.get('shift', 0)
 
             decays = kernel.get('decay', {})
-            d_e_in = decays.get('east_inward', 0.05)
-            d_e_out = decays.get('east_outward', 0.05)
-            d_w_in = decays.get('west_inward', 0.05)
-            d_w_out = decays.get('west_outward', 0.05)
-            d_n_in = decays.get('north_inward', 0.05)
-            d_n_out = decays.get('north_outward', 0.05)
-            d_s_in = decays.get('south_inward', 0.05)
-            d_s_out = decays.get('south_outward', 0.05)
+            # Ensure decay sub-properties also fall back to layer defaults if missing
+            def get_decay(key, default):
+                return decays.get(key, layer_defaults.get('decay', {}).get(key, default))
+
+            d_e_in = get_decay('east_inward', 0.05)
+            d_e_out = get_decay('east_outward', 0.05)
+            d_w_in = get_decay('west_inward', 0.05)
+            d_w_out = get_decay('west_outward', 0.05)
+            d_n_in = get_decay('north_inward', 0.05)
+            d_n_out = get_decay('north_outward', 0.05)
+            d_s_in = get_decay('south_inward', 0.05)
+            d_s_out = get_decay('south_outward', 0.05)
 
             logic = kernel.get('logic', 'MULTIPLY').upper()
             color = np.array(kernel.get('color', [255, 255, 255]), dtype=np.float32)
@@ -739,36 +750,69 @@ def generate_samples():
         # But for VKB2 transition, we can force VKB2 for any scene.
         
         with gzip.open(path, "wb") as f:
-             # VKB2 Header: 4s (VKB2), H (w), H (h), B B B B (bg_rgba), I (count) = 16 bytes
-             # We convert the JSON scene to kernels for VKB2 export
+             # VKB6 Header: 4s (VKB6), H (w), H (h), B B B B (bg_rgba), I (total_count) = 16 bytes
              flat_kernels = []
              for layer in scn.get('layers', []):
                  flat_kernels.extend(layer.get('kernels', []))
              
              bg = scn.get('background_color', [0,0,0,255])
-             f.write(struct.pack('<4sHHBBBBI', b'VKB2', scn['width'], scn['height'], bg[0], bg[1], bg[2], bg[3], len(flat_kernels)))
+             f.write(struct.pack('<4sHHBBBBI', b'VKB6', scn['width'], scn['height'], bg[0], bg[1], bg[2], bg[3], len(flat_kernels)))
              
+             # Group kernels by 8-bit prefix of 16-bit quantized XY
+             groups = {}
              for k in flat_kernels:
+                # 16-bit quantization (range 0-65535)
                 xq = int(np.clip(k['x'] / scn['width'] * 65535, 0, 65535))
                 yq = int(np.clip(k['y'] / scn['height'] * 65535, 0, 65535))
-                # For half_w/h, we need to handle both point kernels and bounded kernels
-                hw, hh = 0, 0
-                if 'bounds' in k:
-                    hw = k['bounds'][2]
-                    hh = k['bounds'][3]
                 
-                hwq = int(np.clip(hw / scn['width'] * 65535, 0, 65535))
-                hhq = int(np.clip(hh / scn['height'] * 65535, 0, 65535))
+                # 8-bit prefix, 8-bit suffix
+                px, sx = xq >> 8, xq & 0xFF
+                py, sy = yq >> 8, yq & 0xFF
                 
-                r, g, b = k.get('color', [255,255,255])
-                alpha = int(k.get('alpha', 1.0) * 255)
-                decay = int(k.get('clamp_decay', 0.0) * 255)
-                theta = int((k.get('angle', 0) / 360.0) * 255.0)
-                
-                f.write(struct.pack('<HHHHBBBBBB', xq, yq, hwq, hhq, r, g, b, alpha, decay, theta))
+                prefix = (px, py)
+                if prefix not in groups:
+                    groups[prefix] = []
+                groups[prefix].append((sx, sy, k))
+             
+             for (px, py), k_list in groups.items():
+                f.write(struct.pack('<BBH', px, py, len(k_list)))
+                for sx, sy, k in k_list:
+                    # Determine flags
+                    flags = 0
+                    
+                    hw, hh = 0, 0
+                    if 'bounds' in k:
+                        hw = k['bounds'][2]
+                        hh = k['bounds'][3]
+                    
+                    hwq = int(np.clip(hw / scn['width'] * 65535, 0, 65535))
+                    hhq = int(np.clip(hh / scn['height'] * 65535, 0, 65535))
+                    if hwq != 8 or hhq != 8: flags |= 1
+                    
+                    rgb = k.get('color', [255,255,255])
+                    if rgb[0] != 255 or rgb[1] != 255 or rgb[2] != 255: flags |= 2
+                    
+                    alpha = int(k.get('alpha', 1.0) * 255)
+                    if alpha != 255: flags |= 4
+                    
+                    decay = int(k.get('clamp_decay', 0.0) * 255)
+                    if decay != 0: flags |= 8
+                    
+                    theta = int((k.get('angle', 0) / 360.0) * 255.0)
+                    if theta != 0: flags |= 16
+                    
+                    # Pack record
+                    f.write(struct.pack('<B', flags))
+                    f.write(struct.pack('<BB', sx, sy))
+                    
+                    if flags & 1: f.write(struct.pack('<HH', hwq, hhq))
+                    if flags & 2: f.write(struct.pack('<BBB', rgb[0], rgb[1], rgb[2]))
+                    if flags & 4: f.write(struct.pack('<B', alpha))
+                    if flags & 8: f.write(struct.pack('<B', decay))
+                    if flags & 16: f.write(struct.pack('<B', theta))
 
         t0 = time.time()
-        print(f"Rendering {name} (VKB2 format)...", end=' ', flush=True)
+        print(f"Rendering {name} (VKB6 format)...", end=' ', flush=True)
         img_arr = process_vke_scene(scn, scn['width'], scn['height'], scn['background_color'])
         img = Image.fromarray(img_arr, 'RGBA')
         img.save(f"output/{name}.png")
@@ -790,10 +834,128 @@ if __name__ == "__main__":
     elif args.input:
         output_path = args.output or args.input.replace('.vkb', '.png')
         print(f"Loading '{args.input}'...")
-        
         with gzip.open(args.input, 'rb') as f:
             magic = f.read(4)
-            if magic == b'VKB2':
+            if magic == b'VKB6' or magic == b'VKB5' or magic == b'VKB3':
+                # Struct VKB6/VKB5/VKB3 (Grouped 16-bit Quantized)
+                w, h, br, bg, bb, ba, total_k = struct.unpack('<HHBBBBI', f.read(12))
+                kernels = []
+                k_read = 0
+                while k_read < total_k:
+                    # Read group header
+                    px, py, g_count = struct.unpack('<BBH', f.read(4))
+                    for _ in range(g_count):
+                        # Defaults
+                        hwq, hhq = 1, 1
+                        r, g, b = 255, 255, 255
+                        a, d, t = 255, 0, 0
+                        
+                        if magic == b'VKB6':
+                            flags = struct.unpack('<B', f.read(1))[0]
+                            sx, sy = struct.unpack('<BB', f.read(2))
+                            if flags & 1:
+                                hwq, hhq = struct.unpack('<HH', f.read(4))
+                            if flags & 2:
+                                r, g, b = struct.unpack('<BBB', f.read(3))
+                            if flags & 4:
+                                a = struct.unpack('<B', f.read(1))[0]
+                            if flags & 8:
+                                d = struct.unpack('<B', f.read(1))[0]
+                            if flags & 16:
+                                t = struct.unpack('<B', f.read(1))[0]
+                        else:
+                            sx, sy, hwq, hhq, r, g, b, a, d, t = struct.unpack('<BBHHBBBBBB', f.read(12))
+                        
+                        xq = (px << 8) | sx
+                        yq = (py << 8) | sy
+                        
+                        kx = (xq / 65535.0) * w
+                        ky = (yq / 65535.0) * h
+                        # Use generous 0.5px epsilon
+                        hw = (hwq / 65535.0) * w + 0.5
+                        hh = (hhq / 65535.0) * h + 0.5
+                        angle = (t / 255.0) * 360.0
+                        
+                        kernels.append({
+                            'x': kx, 'y': ky, 'color': [r, g, b], 'alpha': a/255.0,
+                            'clamp_decay': d/255.0,
+                            'angle': angle if d > 0 else 0,
+                            'bounds': [-hw, -hh, hw, hh],
+                            'decay': {k: 0.0 for k in ['east_inward', 'east_outward', 'west_inward', 'west_outward',
+                                                      'north_inward', 'north_outward', 'south_inward', 'south_outward']}
+                        })
+                        k_read += 1
+                scene = {
+                    'width': w, 'height': h, 'background_color': [br, bg, bb, ba],
+                    'layers': [{'kernels': kernels}]
+                }
+            elif magic == b'VKB4':
+                # Struct VKB4 (Grouped 12-bit Quantized)
+                w, h, br, bg, bb, ba, total_k = struct.unpack('<HHBBBBI', f.read(12))
+                kernels = []
+                k_read = 0
+                while k_read < total_k:
+                    px, py, g_count = struct.unpack('<BBH', f.read(4))
+                    for _ in range(g_count):
+                        s_xy, hwq, hhq, r, g, b, a, d, t = struct.unpack('<BHHBBBBBB', f.read(11))
+                        
+                        # Unpack 12-bit positions (8-bit prefix + 4-bit suffix)
+                        xq = (px << 4) | (s_xy >> 4)
+                        yq = (py << 4) | (s_xy & 0x0F)
+                        
+                        kx = (xq / 4095.0) * w
+                        ky = (yq / 4095.0) * h
+                        hw = (hwq / 65535.0) * w + 0.01
+                        hh = (hhq / 65535.0) * h + 0.01
+                        angle = (t / 255.0) * 360.0
+                        
+                        kernels.append({
+                            'x': kx, 'y': ky, 'color': [r, g, b], 'alpha': a/255.0,
+                            'clamp_decay': d/255.0,
+                            'angle': angle if d > 0 else 0,
+                            'bounds': [-hw, -hh, hw, hh],
+                            'decay': {k: 0.0 for k in ['east_inward', 'east_outward', 'west_inward', 'west_outward',
+                                                      'north_inward', 'north_outward', 'south_inward', 'south_outward']}
+                        })
+                        k_read += 1
+                scene = {
+                    'width': w, 'height': h, 'background_color': [br, bg, bb, ba],
+                    'layers': [{'kernels': kernels}]
+                }
+            elif magic == b'VKB3':
+                # Struct VKB3 (Grouped Quantized)
+                w, h, br, bg, bb, ba, total_k = struct.unpack('<HHBBBBI', f.read(12))
+                kernels = []
+                k_read = 0
+                while k_read < total_k:
+                    # Read group header
+                    px, py, g_count = struct.unpack('<BBH', f.read(4))
+                    for _ in range(g_count):
+                        sx, sy, hwq, hhq, r, g, b, a, d, t = struct.unpack('<BBHHBBBBBB', f.read(12))
+                        
+                        xq = (px << 8) | sx
+                        yq = (py << 8) | sy
+                        
+                        kx = (xq / 65535.0) * w
+                        ky = (yq / 65535.0) * h
+                        hw = (hwq / 65535.0) * w + 0.01
+                        hh = (hhq / 65535.0) * h + 0.01
+                        angle = (t / 255.0) * 360.0
+                        
+                        kernels.append({
+                            'x': kx, 'y': ky, 'color': [r, g, b], 'alpha': a/255.0,
+                            'clamp_decay': d/255.0,
+                            'angle': angle if d > 0 else 0,
+                            'bounds': [-hw, -hh, hw, hh],
+                            'decay': {k: 0.0 for k in ['east_inward', 'east_outward', 'west_inward', 'west_outward',
+                                                      'north_inward', 'north_outward', 'south_inward', 'south_outward']}
+                        })
+                        k_read += 1
+                scene = {
+                    'width': w, 'height': h, 'background_color': [br, bg, bb, ba],
+                    'layers': [{'kernels': kernels}]
+                }
+            elif magic == b'VKB2':
                 # Struct VKB2 (Modern Quantized)
                 w, h, br, bg, bb, ba, k_count = struct.unpack('<HHBBBBI', f.read(12))
                 kernels = []

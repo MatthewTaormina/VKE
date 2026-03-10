@@ -36,10 +36,128 @@ def render(json_path, output_png):
     """
     print(f"Rendering {json_path}...")
     if json_path.endswith('.vkb'):
-        import struct
         with gzip.open(json_path, "rb") as f:
             magic = f.read(4)
-            if magic == b'VKB2':
+            if magic == b'VKB6' or magic == b'VKB5' or magic == b'VKB3':
+                # Struct VKB6/VKB5/VKB3 (Grouped 16-bit Quantized)
+                w, h, br, bg, bb, ba, total_k = struct.unpack('<HHBBBBI', f.read(12))
+                kernels = []
+                k_read = 0
+                while k_read < total_k:
+                    # Read group header
+                    px, py, g_count = struct.unpack('<BBH', f.read(4))
+                    for _ in range(g_count):
+                        # Defaults for VKB6
+                        hwq, hhq = 8, 8 # Default from vectorizer logic if not provided
+                        r, g, b = 255, 255, 255
+                        a, d, t = 255, 0, 0
+                        
+                        if magic == b'VKB6':
+                            flags = struct.unpack('<B', f.read(1))[0]
+                            sx, sy = struct.unpack('<BB', f.read(2))
+                            if flags & 1:
+                                hwq, hhq = struct.unpack('<HH', f.read(4))
+                            if flags & 2:
+                                r, g, b = struct.unpack('<BBB', f.read(3))
+                            if flags & 4:
+                                a = struct.unpack('<B', f.read(1))[0]
+                            if flags & 8:
+                                d = struct.unpack('<B', f.read(1))[0]
+                            if flags & 16:
+                                t = struct.unpack('<B', f.read(1))[0]
+                        else:
+                            # VKB5/VKB3 is fixed 12 bytes
+                            sx, sy, hwq, hhq, r, g, b, a, d, t = struct.unpack('<BBHHBBBBBB', f.read(12))
+                        
+                        xq = (px << 8) | sx
+                        yq = (py << 8) | sy
+                        
+                        kx = (xq / 65535.0) * w
+                        ky = (yq / 65535.0) * h
+                        # Use a more generous epsilon (0.5px) to bridge quantization gaps
+                        hw = (hwq / 65535.0) * w + 0.5
+                        hh = (hhq / 65535.0) * h + 0.5
+                        angle = (t / 255.0) * 360.0
+                        
+                        kernels.append({
+                            'x': kx, 'y': ky, 'color': [r, g, b], 'alpha': a/255.0,
+                            'clamp_decay': d/255.0,
+                            'angle': angle if d > 0 else 0,
+                            'bounds': [-hw, -hh, hw, hh],
+                            'decay': {k: 0.0 for k in ['east_inward', 'east_outward', 'west_inward', 'west_outward',
+                                                      'north_inward', 'north_outward', 'south_inward', 'south_outward']}
+                        })
+                        k_read += 1
+                scene = {
+                    'width': w, 'height': h, 'background_color': [br, bg, bb, ba],
+                    'layers': [{'kernels': kernels}]
+                }
+            elif magic == b'VKB4':
+                # Struct VKB4 (Grouped 12-bit Quantized)
+                w, h, br, bg, bb, ba, total_k = struct.unpack('<HHBBBBI', f.read(12))
+                kernels = []
+                k_read = 0
+                while k_read < total_k:
+                    px, py, g_count = struct.unpack('<BBH', f.read(4))
+                    for _ in range(g_count):
+                        s_xy, hwq, hhq, r, g, b, a, d, t = struct.unpack('<BHHBBBBBB', f.read(11))
+                        
+                        # Unpack 12-bit positions (8-bit prefix + 4-bit suffix)
+                        xq = (px << 4) | (s_xy >> 4)
+                        yq = (py << 4) | (s_xy & 0x0F)
+                        
+                        kx = (xq / 4095.0) * w
+                        ky = (yq / 4095.0) * h
+                        hw = (hwq / 65535.0) * w + 0.01
+                        hh = (hhq / 65535.0) * h + 0.01
+                        angle = (t / 255.0) * 360.0
+                        
+                        kernels.append({
+                            'x': kx, 'y': ky, 'color': [r, g, b], 'alpha': a/255.0,
+                            'clamp_decay': d/255.0,
+                            'angle': angle if d > 0 else 0,
+                            'bounds': [-hw, -hh, hw, hh],
+                            'decay': {k: 0.0 for k in ['east_inward', 'east_outward', 'west_inward', 'west_outward',
+                                                      'north_inward', 'north_outward', 'south_inward', 'south_outward']}
+                        })
+                        k_read += 1
+                scene = {
+                    'width': w, 'height': h, 'background_color': [br, bg, bb, ba],
+                    'layers': [{'kernels': kernels}]
+                }
+            elif magic == b'VKB3':
+                # Struct VKB3 (Grouped Quantized)
+                w, h, br, bg, bb, ba, total_k = struct.unpack('<HHBBBBI', f.read(12))
+                kernels = []
+                k_read = 0
+                while k_read < total_k:
+                    px, py, g_count = struct.unpack('<BBH', f.read(4))
+                    for _ in range(g_count):
+                        sx, sy, hwq, hhq, r, g, b, a, d, t = struct.unpack('<BBHHBBBBBB', f.read(12))
+                        
+                        xq = (px << 8) | sx
+                        yq = (py << 8) | sy
+                        
+                        kx = (xq / 65535.0) * w
+                        ky = (yq / 65535.0) * h
+                        hw = (hwq / 65535.0) * w + 0.01
+                        hh = (hhq / 65535.0) * h + 0.01
+                        angle = (t / 255.0) * 360.0
+                        
+                        kernels.append({
+                            'x': kx, 'y': ky, 'color': [r, g, b], 'alpha': a/255.0,
+                            'clamp_decay': d/255.0,
+                            'angle': angle if d > 0 else 0,
+                            'bounds': [-hw, -hh, hw, hh],
+                            'decay': {k: 0.0 for k in ['east_inward', 'east_outward', 'west_inward', 'west_outward',
+                                                      'north_inward', 'north_outward', 'south_inward', 'south_outward']}
+                        })
+                        k_read += 1
+                scene = {
+                    'width': w, 'height': h, 'background_color': [br, bg, bb, ba],
+                    'layers': [{'kernels': kernels}]
+                }
+            elif magic == b'VKB2':
                 # Struct VKB2 (Modern Quantized)
                 w, h, br, bg, bb, ba, k_count = struct.unpack('<HHBBBBI', f.read(12))
                 kernels = []
@@ -55,9 +173,6 @@ def render(json_path, output_png):
                     kernels.append({
                         'x': kx, 'y': ky, 'color': [r, g, b], 'alpha': a/255.0,
                         'clamp_decay': d/255.0,
-                        # Vectorizer output is quadtree/tiling based; rotation breaks the grid.
-                        # We only apply angle if d > 0 (implying a 'soft stroke' intent) 
-                        # or if explicitly desired. For now, we prefer tiling stability.
                         'angle': angle if d > 0 else 0,
                         'bounds': [-hw, -hh, hw, hh],
                         'decay': {k: 0.0 for k in ['east_inward', 'east_outward', 'west_inward', 'west_outward',

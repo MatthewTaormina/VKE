@@ -14,9 +14,13 @@ The format has **two sub-types** distinguished by a magic header:
 
 | Sub-type | Magic | Description |
 |----------|-------|-------------|
-| **VKB1** | `VKB1` | Legacy binary struct records |
-| **VKB2** | `VKB2` | Modern quantized binary struct records (Default) |
-| **JSON VKB**   | _(any other)_ | gzip-compressed JSON scene (hand-crafted) |
+| **VKB1** | `VKB1` | Legacy binary struct records (float32 geometry) |
+| **VKB2** | `VKB2` | Legacy quantized records (14 bytes per kernel) |
+| **VKB3** | `VKB3` | Spatial grouping (8-bit prefix, 16-bit suffixes) |
+| **VKB4** | `VKB4` | High-compression 12-bit position (Packed suffixes) |
+| **VKB5** | `VKB5` | 16-bit precision with spatial grouping (12 bytes per kernel) |
+| **VKB6** | `VKB6` | Optimized 16-bit precision with **Flag Bitmask** (3–12 bytes) |
+| **JSON** | _(N/A)_ | gzip-compressed JSON scene (hand-crafted) |
 
 Both are stored with a `.vkb` extension and loaded identically by `render.py`.
 
@@ -78,7 +82,7 @@ One record per kernel, packed sequentially immediately after the header.
 
 ---
 
-### Sub-type 2: Struct VKB (`VKB2`) [Current]
+### Sub-type 2: Struct VKB (`VKB2`) [Legacy]
 
 Used by `vectorizer.py` for high-quality, high-compression output. Uses 16-bit quantization for geometry and adds alpha/decay support.
 
@@ -129,8 +133,122 @@ Packed sequentially after the header.
 
 ---
 
-### Rendering Contract
+### Sub-type 6: Struct VKB (`VKB6`) [Current]
 
+Optimizes `VKB5` by making non-positional parameters optional via a **Bitmask**. This avoids storing defaults (e.g., solid white, zero rotation, full opacity) and can reduce simple records from 12 bytes down to just **3 bytes**.
+
+### File Layout
+
+```
+[FILE HEADER — 16 bytes]
+[GROUP 1]
+    [GROUP HEADER — 4 bytes]
+    [KERNEL RECORDS — Variable width × group_kernel_count]
+[GROUP 2]
+    ...
+```
+
+### File Header (16 bytes)
+
+Identical to `VKB5` but with `magic = VKB6`.
+
+### Group Header (4 bytes)
+
+Identical to `VKB3`/`VKB5`.
+
+### Grouped Kernel Record (Variable Width)
+
+A record always starts with 3 bytes (`flags`, `sx`, `sy`), followed by optional fields.
+
+| Offset | Size | Type     | Field      | Description |
+|--------|------|----------|------------|-------------|
+| 0      | 1    | `uint8`  | `flags`    | Bitmask of present fields. |
+| 1      | 1    | `uint8`  | `suffix_x` | Low 8 bits of quantized X. |
+| 2      | 1    | `uint8`  | `suffix_y` | Low 8 bits of quantized Y. |
+| ...    | ...  | ...      | Optional   | See below. |
+
+#### Flag Bits
+| Bit | Field      | Type     | Default Value | Size if Bit=1 |
+|-----|------------|----------|---------------|---------------|
+| 0   | Dimensions | `uint16[2]` | `[1, 1]` / q (dummy) | 4 bytes (`hw_q`, `hh_q`) |
+| 1   | RGB Color  | `uint8[3]`  | `[255, 255, 255]` | 3 bytes (`r`, `g`, `b`) |
+| 2   | Alpha      | `uint8`     | `255` (1.0) | 1 byte (`a`) |
+| 3   | Decay      | `uint8`     | `0`         | 1 byte (`d`) |
+| 4   | Rotation   | `uint8`     | `0`         | 1 byte (`t`) |
+
+**Record Parsing Logic:**
+1. Read `flags`.
+2. Read `sx`, `sy`.
+3. If `flags & 1`: Read 4 bytes for `hw_q`, `hh_q`. Else use default.
+4. If `flags & 2`: Read 3 bytes for `r`, `g`, `b`. Else use `[255, 255, 255]`.
+5. If `flags & 4`: Read 1 byte for `a`. Else use `255`.
+6. If `flags & 8`: Read 1 byte for `d`. Else use `0`.
+7. If `flags & 16`: Read 1 byte for `t`. Else use `0`.
+
+---
+
+### Sub-type 5: Struct VKB (`VKB5`)
+
+### File Layout
+
+```
+[FILE HEADER — 16 bytes]
+[GROUP 1]
+    [GROUP HEADER — 4 bytes]
+    [KERNEL RECORDS — 12 bytes × group_kernel_count]
+[GROUP 2]
+    ...
+```
+
+### File Header (16 bytes)
+
+Identical to `VKB2`/`VKB3`/`VKB4` but with `magic = VKB5`.
+
+### Group Header (4 bytes)
+
+Identical to `VKB3`.
+
+| Offset | Size | Type     | Field           | Description |
+|--------|------|----------|-----------------|-------------|
+| 0      | 1    | `uint8`  | `prefix_x`      | High 8 bits of quantized X. |
+| 1      | 1    | `uint8`  | `prefix_y`      | High 8 bits of quantized Y. |
+| 2      | 2    | `uint16` | `k_count`       | Number of kernels in this group. |
+
+### Grouped Kernel Record (12 bytes)
+
+| Offset | Size | Type     | Field           | Description |
+|--------|------|----------|-----------------|-------------|
+| 0      | 1    | `uint8`  | `suffix_x`      | Low 8 bits of quantized X. |
+| 1      | 1    | `uint8`  | `suffix_y`      | Low 8 bits of quantized Y. |
+| 2      | 2    | `uint16` | `hw_q`          | Quantized half-width. |
+| 4      | 2    | `uint16` | `hh_q`          | Quantized half-height. |
+| 6      | 1    | `uint8`  | `r`             | Red. |
+| 7      | 1    | `uint8`  | `g`             | Green. |
+| 8      | 1    | `uint8`  | `b`             | Blue. |
+| 9      | 1    | `uint8`  | `a`             | Alpha. |
+| 10     | 1    | `uint8`  | `decay`         | Decay. |
+| 11     | 1    | `uint8`  | `theta`         | Rotation. |
+
+**Python struct format:** `'<BBHHBBBBBB'`
+
+---
+
+## Reconstruction and Rendering Notes
+
+These notes apply to all quantized versions (**VKB2** through **VKB6**):
+
+### 1. Position Reconstruction
+For grouped formats (**VKB3**, **VKB5**, **VKB6**):
+- `xq = (prefix_x << 8) | suffix_x`
+- `yq = (prefix_y << 8) | suffix_y`
+- `x_pixels = (xq / 65535.0) * canvas_width`
+
+### 2. Seamless Rendering (Epsilon)
+When rendering adjacent quadtree-style kernels, it is critical to add a small **epsilon (padding)** to the width and height of each kernel. 
+- **Recommended Epsilon:** `+0.5 pixels` to each half-dimension.
+- This bridges small gaps caused by quantization and floating-point precision, preventing the background from bleeding through as "black cracks".
+
+### 3. Rendering Contract
 When `render.py` reads a Struct VKB file it reconstructs each kernel as:
 
 ```python
