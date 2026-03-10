@@ -227,6 +227,458 @@ def process_vke_scene(scene_data, width, height, bg_color):
 
 
 def generate_samples():
+    """Generate 15 showcase scenes demonstrating VKE's range."""
+    os.makedirs('samples', exist_ok=True)
+    os.makedirs('output', exist_ok=True)
+
+    samples = []
+    W, H = 400, 400
+    CX, CY = W // 2, H // 2
+
+    def solid(v): return {k: v for k in ['east_inward','east_outward','west_inward','west_outward',
+                                          'north_inward','north_outward','south_inward','south_outward']}
+
+    # ----------------------------------------------------------
+    # 1. SOLAR ECLIPSE — dramatic ring + corona glow
+    # ----------------------------------------------------------
+    s1_kernels = [
+        # Wide orange corona glow
+        {'x': CX, 'y': CY, 'logic': 'SQUARESUM',
+         'decay': solid(0.005), 'color': [255, 140, 20], 'alpha': 0.9},
+        # Inner bright ring
+        {'x': CX, 'y': CY, 'logic': 'MAX', 'min_clamp': 70, 'max_clamp': 90,
+         'decay': solid(0.0), 'color': [255, 220, 80]},
+        # Outer faint halo ring
+        {'x': CX, 'y': CY, 'logic': 'MAX', 'min_clamp': 100, 'max_clamp': 115,
+         'decay': solid(0.0), 'color': [255, 180, 60], 'alpha': 0.6},
+        # Black moon disc
+        {'x': CX, 'y': CY, 'logic': 'MAX', 'max_clamp': 72,
+         'decay': solid(0.0), 'color': [5, 5, 10]},
+    ]
+    samples.append({'width': W, 'height': H, 'background_color': [5, 5, 15, 255],
+                    'layers': [{'kernels': s1_kernels}]})
+
+    # ----------------------------------------------------------
+    # 2. NEON LOGO RING — multi-ring glowing emblem
+    # ----------------------------------------------------------
+    s2_kernels = []
+    ring_colors = [[255, 0, 120], [0, 220, 255], [255, 200, 0], [120, 0, 255]]
+    for i, col in enumerate(ring_colors):
+        inner = 30 + i * 28
+        s2_kernels.append({'x': CX, 'y': CY, 'logic': 'MAX',
+                           'min_clamp': inner, 'max_clamp': inner + 16,
+                           'decay': solid(0.0), 'color': col, 'alpha': 0.95})
+        # Soft glow around each ring
+        s2_kernels.append({'x': CX, 'y': CY, 'logic': 'SQUARESUM',
+                           'min_clamp': inner - 4, 'max_clamp': inner + 20,
+                           'decay': solid(0.04), 'color': col, 'alpha': 0.25})
+    # Central star
+    for angle_offset in range(0, 360, 45):
+        s2_kernels.append({'x': CX, 'y': CY, 'angle': angle_offset,
+                           'logic': 'MAX',
+                           'decay': {'east_inward': 0.018, 'east_outward': 0.018,
+                                     'west_inward': 0.018, 'west_outward': 0.018,
+                                     'north_inward': 0.3, 'north_outward': 0.3,
+                                     'south_inward': 0.3, 'south_outward': 0.3},
+                           'color': [255, 255, 255], 'max_clamp': 25, 'alpha': 0.9})
+    samples.append({'width': W, 'height': H, 'background_color': [8, 8, 20, 255],
+                    'layers': [{'kernels': s2_kernels}]})
+
+    # ----------------------------------------------------------
+    # 3. PLASMA WEB — organic parabolic cell field
+    # ----------------------------------------------------------
+    import random
+    random.seed(42)
+    s3_kernels = []
+    plasma_colors = [[80, 0, 200], [0, 180, 255], [200, 0, 180], [0, 255, 150], [255, 80, 0]]
+    for _ in range(25):
+        col = plasma_colors[random.randint(0, len(plasma_colors)-1)]
+        s3_kernels.append({
+            'x': random.randint(20, W-20), 'y': random.randint(20, H-20),
+            'modulation': 'PARABOLIC', 'period': random.randint(80, 160),
+            'parabola_scale': random.randint(30, 60),
+            'decay': solid(0.008 + random.random() * 0.006),
+            'color': col, 'logic': 'MULTIPLY', 'alpha': 0.75
+        })
+    samples.append({'width': W, 'height': H, 'background_color': [5, 0, 20, 255],
+                    'layers': [{'kernels': s3_kernels}]})
+
+    # ----------------------------------------------------------
+    # 4. SUNSET GRADIENT — warm layered horizontal sweeps
+    # ----------------------------------------------------------
+    s4_kernels = [
+        # Sky — top violet bloom
+        {'x': CX, 'y': -20, 'logic': 'MAX', 'decay': {'east_inward': 0.0, 'east_outward': 0.0,
+         'west_inward': 0.0, 'west_outward': 0.0,
+         'north_inward': 0.006, 'north_outward': 0.006,
+         'south_inward': 0.003, 'south_outward': 0.003},
+         'color': [120, 60, 200], 'alpha': 1.0},
+        # Horizon orange
+        {'x': CX, 'y': 200, 'logic': 'MAX', 'decay': solid(0.003),
+         'color': [255, 100, 20], 'alpha': 0.9},
+        # Sun disc
+        {'x': CX, 'y': 260, 'logic': 'MAX', 'max_clamp': 55, 'decay': solid(0.0),
+         'color': [255, 220, 80]},
+        # Sun glow
+        {'x': CX, 'y': 260, 'logic': 'SQUARESUM', 'decay': solid(0.007),
+         'color': [255, 160, 20], 'alpha': 0.5},
+        # Ground — deep dark teal
+        {'x': CX, 'y': H + 50, 'logic': 'MAX', 'decay': solid(0.004),
+         'color': [10, 40, 60], 'alpha': 0.95},
+    ]
+    samples.append({'width': W, 'height': H, 'background_color': [15, 10, 40, 255],
+                    'layers': [{'kernels': s4_kernels}]})
+
+    # ----------------------------------------------------------
+    # 5. 8-POINT STAR LOGO — classic sharp vector star
+    # ----------------------------------------------------------
+    s5_kernels = []
+    star_col = [255, 215, 0]
+    for a in range(0, 180, 20):
+        s5_kernels.append({'x': CX, 'y': CY, 'angle': a, 'logic': 'MAX',
+                           'decay': {'east_inward': 0.009, 'east_outward': 0.009,
+                                     'west_inward': 0.009, 'west_outward': 0.009,
+                                     'north_inward': 0.18, 'north_outward': 0.18,
+                                     'south_inward': 0.18, 'south_outward': 0.18},
+                           'color': star_col, 'alpha': 0.92})
+    # Solid center circle
+    s5_kernels.append({'x': CX, 'y': CY, 'logic': 'MAX', 'max_clamp': 22,
+                       'decay': solid(0.0), 'color': star_col})
+    samples.append({'width': W, 'height': H, 'background_color': [15, 15, 40, 255],
+                    'layers': [{'kernels': s5_kernels}]})
+
+    # ----------------------------------------------------------
+    # 6. CRYSTAL LATTICE — triangle-modulated grid
+    # ----------------------------------------------------------
+    s6_kernels = []
+    for gx in range(40, W, 60):
+        for gy in range(40, H, 60):
+            s6_kernels.append({
+                'x': gx, 'y': gy, 'logic': 'SQUARESUM',
+                'modulation': 'TRIANGLE', 'period': 50, 'shift': 15,
+                'decay': solid(0.08), 'color': [100, 220, 255], 'alpha': 0.85
+            })
+    samples.append({'width': W, 'height': H, 'background_color': [5, 10, 30, 255],
+                    'layers': [{'kernels': s6_kernels}]})
+
+    # ----------------------------------------------------------
+    # 7. OCEAN RIPPLES — RAMP concentric rings across canvas
+    # ----------------------------------------------------------
+    s7_kernels = [
+        {'x': CX, 'y': CY + 60, 'logic': 'SQUARESUM',
+         'modulation': 'RAMP', 'period': 28, 'shift': 12,
+         'decay': {'east_inward': 0.004, 'east_outward': 0.004,
+                   'west_inward': 0.004, 'west_outward': 0.004,
+                   'north_inward': 0.01, 'north_outward': 0.01,
+                   'south_inward': 0.002, 'south_outward': 0.002},
+         'color': [30, 150, 255], 'alpha': 0.9},
+        # Water surface tint
+        {'x': CX, 'y': H + 100, 'logic': 'MAX', 'decay': solid(0.004),
+         'color': [0, 60, 120], 'alpha': 0.6},
+        # Sky
+        {'x': CX, 'y': -100, 'logic': 'MAX', 'decay': solid(0.004),
+         'color': [80, 160, 255], 'alpha': 0.6},
+    ]
+    samples.append({'width': W, 'height': H, 'background_color': [10, 30, 80, 255],
+                    'layers': [{'kernels': s7_kernels}]})
+
+    # ----------------------------------------------------------
+    # 8. ABSTRACT FACE — larger, smoother geometric portrait
+    # ----------------------------------------------------------
+    s8 = {
+        'width': W, 'height': H, 'background_color': [18, 18, 28, 255],
+        'layers': []
+    }
+    # Skin base — large warm ellipse
+    s8['layers'].append({'kernels': [
+        {'x': CX, 'y': CY + 20, 'logic': 'SQUARESUM',
+         'decay': {'east_inward': 0.012, 'east_outward': 0.012,
+                   'west_inward': 0.012, 'west_outward': 0.012,
+                   'north_inward': 0.014, 'north_outward': 0.014,
+                   'south_inward': 0.01, 'south_outward': 0.01},
+         'color': [220, 170, 120]},
+        # Shadow bottom of face
+        {'x': CX, 'y': CY + 120, 'logic': 'SQUARESUM', 'decay': solid(0.008),
+         'color': [150, 100, 70], 'alpha': 0.6},
+        # Highlight forehead
+        {'x': CX, 'y': CY - 80, 'logic': 'SQUARESUM', 'decay': solid(0.025),
+         'color': [255, 220, 180], 'alpha': 0.4},
+    ]})
+    # Hair — dark curved cap
+    hair_kernels = []
+    for dx in range(-120, 130, 18):
+        hair_kernels.append({'x': CX + dx, 'y': CY - 80 + int(dx**2 / 400),
+                             'logic': 'SQUARESUM', 'decay': solid(0.04),
+                             'color': [40, 20, 10]})
+    s8['layers'].append({'kernels': hair_kernels})
+    # Eyes
+    eye_kernels = []
+    for ex in [CX - 55, CX + 55]:
+        # Eye white
+        eye_kernels.append({'x': ex, 'y': CY - 20, 'angle': 10,
+                            'logic': 'SQUARESUM', 'max_clamp': 22,
+                            'decay': {'east_inward': 0.06, 'east_outward': 0.06,
+                                      'west_inward': 0.06, 'west_outward': 0.06,
+                                      'north_inward': 0.12, 'north_outward': 0.12,
+                                      'south_inward': 0.12, 'south_outward': 0.12},
+                            'color': [240, 240, 240]})
+        # Iris
+        eye_kernels.append({'x': ex, 'y': CY - 18, 'logic': 'MAX', 'max_clamp': 12,
+                            'decay': solid(0.0), 'color': [50, 100, 200]})
+        # Pupil
+        eye_kernels.append({'x': ex, 'y': CY - 18, 'logic': 'MAX', 'max_clamp': 6,
+                            'decay': solid(0.0), 'color': [10, 10, 10]})
+        # Brow
+        for bdx in range(-20, 25, 8):
+            eye_kernels.append({'x': ex + bdx, 'y': CY - 50 + int(abs(bdx) * 0.15),
+                                'logic': 'MAX', 'max_clamp': 5,
+                                'decay': solid(0.0), 'color': [50, 25, 10]})
+    s8['layers'].append({'kernels': eye_kernels})
+    # Nose + mouth
+    s8['layers'].append({'kernels': [
+        # Nose shadow
+        {'x': CX, 'y': CY + 30, 'logic': 'SQUARESUM',
+         'decay': {'east_inward': 0.15, 'east_outward': 0.15,
+                   'west_inward': 0.15, 'west_outward': 0.15,
+                   'north_inward': 0.04, 'north_outward': 0.04,
+                   'south_inward': 0.04, 'south_outward': 0.04},
+         'color': [170, 110, 80], 'alpha': 0.7},
+        # Top lip
+        {'x': CX, 'y': CY + 80, 'angle': 0, 'logic': 'SQUARESUM',
+         'decay': {'east_inward': 0.05, 'east_outward': 0.05,
+                   'west_inward': 0.05, 'west_outward': 0.05,
+                   'north_inward': 0.2, 'north_outward': 0.2,
+                   'south_inward': 0.2, 'south_outward': 0.2},
+         'color': [180, 70, 70]},
+        # Bottom lip
+        {'x': CX, 'y': CY + 96, 'logic': 'SQUARESUM',
+         'decay': {'east_inward': 0.04, 'east_outward': 0.04,
+                   'west_inward': 0.04, 'west_outward': 0.04,
+                   'north_inward': 0.18, 'north_outward': 0.18,
+                   'south_inward': 0.22, 'south_outward': 0.22},
+         'color': [200, 90, 90]},
+    ]})
+    samples.append(s8)
+
+    # ----------------------------------------------------------
+    # 9. RADIAL BURST — 36 rotated rays from center
+    # ----------------------------------------------------------
+    s9_kernels = []
+    burst_cols = [[255, 60, 0], [255, 140, 0], [255, 220, 0], [200, 255, 0], [0, 200, 255]]
+    for i in range(36):
+        col = burst_cols[i % len(burst_cols)]
+        s9_kernels.append({'x': CX, 'y': CY, 'angle': i * 10, 'logic': 'MAX',
+                           'decay': {'east_inward': 0.008, 'east_outward': 0.008,
+                                     'west_inward': 0.008, 'west_outward': 0.008,
+                                     'north_inward': 0.5, 'north_outward': 0.5,
+                                     'south_inward': 0.5, 'south_outward': 0.5},
+                           'color': col, 'max_clamp': 190, 'alpha': 0.8})
+    # Center circle
+    s9_kernels.append({'x': CX, 'y': CY, 'logic': 'MAX', 'max_clamp': 18,
+                       'decay': solid(0.0), 'color': [255, 255, 255]})
+    samples.append({'width': W, 'height': H, 'background_color': [10, 10, 10, 255],
+                    'layers': [{'kernels': s9_kernels}]})
+
+    # ----------------------------------------------------------
+    # 10. NEON GRID — glowing cross-hair pattern
+    # ----------------------------------------------------------
+    s10_kernels = []
+    for gx in range(50, W, 80):
+        for gy in range(50, H, 80):
+            hue = ((gx + gy) % 360)
+            r_c = int(128 + 127 * math.sin(math.radians(hue)))
+            g_c = int(128 + 127 * math.sin(math.radians(hue + 120)))
+            b_c = int(128 + 127 * math.sin(math.radians(hue + 240)))
+            # Horizontal bar
+            s10_kernels.append({'x': gx, 'y': gy, 'angle': 0, 'logic': 'MAX',
+                                'decay': {'east_inward': 0.005, 'east_outward': 0.005,
+                                          'west_inward': 0.005, 'west_outward': 0.005,
+                                          'north_inward': 0.25, 'north_outward': 0.25,
+                                          'south_inward': 0.25, 'south_outward': 0.25},
+                                'color': [r_c, g_c, b_c], 'alpha': 0.9})
+            # Vertical bar
+            s10_kernels.append({'x': gx, 'y': gy, 'angle': 90, 'logic': 'MAX',
+                                'decay': {'east_inward': 0.005, 'east_outward': 0.005,
+                                          'west_inward': 0.005, 'west_outward': 0.005,
+                                          'north_inward': 0.25, 'north_outward': 0.25,
+                                          'south_inward': 0.25, 'south_outward': 0.25},
+                                'color': [r_c, g_c, b_c], 'alpha': 0.9})
+            # Glow dot at intersection
+            s10_kernels.append({'x': gx, 'y': gy, 'logic': 'SQUARESUM',
+                                'decay': solid(0.05), 'color': [255, 255, 255], 'alpha': 0.4})
+    samples.append({'width': W, 'height': H, 'background_color': [5, 5, 15, 255],
+                    'layers': [{'kernels': s10_kernels}]})
+
+    # ----------------------------------------------------------
+    # 11. VORTEX — stacked multi-ring spiral
+    # ----------------------------------------------------------
+    s11_kernels = []
+    vortex_cols = [[200, 0, 255], [0, 200, 255], [255, 0, 120], [255, 200, 0], [0, 255, 150]]
+    for i in range(18):
+        radius = 18 + i * 10
+        angle = i * 20
+        col = vortex_cols[i % len(vortex_cols)]
+        # Full ring using MAX + min/max clamp + soft glow layer
+        s11_kernels.append({'x': CX, 'y': CY, 'angle': angle, 'logic': 'MAX',
+                            'min_clamp': radius, 'max_clamp': radius + 12,
+                            'decay': solid(0.0),
+                            'color': col, 'alpha': 1.0})
+    samples.append({'width': W, 'height': H, 'background_color': [5, 0, 15, 255],
+                    'layers': [{'kernels': s11_kernels}]})
+
+    # ----------------------------------------------------------
+    # 12. ATOM DIAGRAM — nucleus + 3 orbital ellipses
+    # ----------------------------------------------------------
+    s12_kernels = [
+        # Nucleus glow
+        {'x': CX, 'y': CY, 'logic': 'SQUARESUM', 'decay': solid(0.04),
+         'color': [255, 160, 0], 'alpha': 0.9},
+        {'x': CX, 'y': CY, 'logic': 'MAX', 'max_clamp': 14,
+         'decay': solid(0.0), 'color': [255, 220, 80]},
+    ]
+    # 3 orbital rings at different angles
+    for orb_angle, orb_col in [(0, [100, 220, 255]), (60, [200, 100, 255]), (120, [100, 255, 180])]:
+        s12_kernels.append({'x': CX, 'y': CY, 'angle': orb_angle, 'logic': 'SQUARESUM',
+                            'min_clamp': 95, 'max_clamp': 110,
+                            'decay': {'east_inward': 0.0, 'east_outward': 0.0,
+                                      'west_inward': 0.0, 'west_outward': 0.0,
+                                      'north_inward': 0.5, 'north_outward': 0.5,
+                                      'south_inward': 0.0, 'south_outward': 0.0},
+                            'color': orb_col, 'alpha': 0.9})
+        s12_kernels.append({'x': CX, 'y': CY, 'angle': orb_angle, 'logic': 'SQUARESUM',
+                            'min_clamp': 95, 'max_clamp': 110,
+                            'decay': {'east_inward': 0.0, 'east_outward': 0.0,
+                                      'west_inward': 0.0, 'west_outward': 0.0,
+                                      'north_inward': 0.0, 'north_outward': 0.0,
+                                      'south_inward': 0.5, 'south_outward': 0.5},
+                            'color': orb_col, 'alpha': 0.9})
+    samples.append({'width': W, 'height': H, 'background_color': [5, 5, 20, 255],
+                    'layers': [{'kernels': s12_kernels}]})
+
+    # ----------------------------------------------------------
+    # 13. FIRE BLOOM — deep red-orange layered flame
+    # ----------------------------------------------------------
+    s13_kernels = [
+        {'x': CX, 'y': H - 20, 'logic': 'MAX',
+         'decay': {'east_inward': 0.006, 'east_outward': 0.006,
+                   'west_inward': 0.006, 'west_outward': 0.006,
+                   'north_inward': 0.004, 'north_outward': 0.006,
+                   'south_inward': 0.01, 'south_outward': 0.01},
+         'color': [255, 80, 0], 'alpha': 1.0},
+        {'x': CX, 'y': H - 40, 'logic': 'SQUARESUM', 'decay': solid(0.006),
+         'color': [255, 160, 0], 'alpha': 0.75},
+        {'x': CX, 'y': H - 80, 'logic': 'SQUARESUM', 'decay': solid(0.01),
+         'color': [255, 220, 30], 'alpha': 0.5},
+        {'x': CX, 'y': H - 120, 'logic': 'SQUARESUM', 'decay': solid(0.018),
+         'color': [255, 255, 200], 'alpha': 0.3},
+        # Embers left/right
+        {'x': CX - 60, 'y': H - 60, 'logic': 'SQUARESUM', 'decay': solid(0.025),
+         'color': [255, 120, 0], 'alpha': 0.5},
+        {'x': CX + 60, 'y': H - 60, 'logic': 'SQUARESUM', 'decay': solid(0.025),
+         'color': [255, 120, 0], 'alpha': 0.5},
+    ]
+    samples.append({'width': W, 'height': H, 'background_color': [10, 5, 5, 255],
+                    'layers': [{'kernels': s13_kernels}]})
+
+    # ----------------------------------------------------------
+    # 14. MOUNTAIN LANDSCAPE — layered horizon scene
+    # ----------------------------------------------------------
+    s14_kernels = [
+        # Sky gradient
+        {'x': CX, 'y': -50, 'logic': 'MAX', 'decay': solid(0.003),
+         'color': [30, 80, 180], 'alpha': 1.0},
+        # Moon
+        {'x': 80, 'y': 80, 'logic': 'MAX', 'max_clamp': 30,
+         'decay': solid(0.0), 'color': [240, 240, 200]},
+        # Moon glow
+        {'x': 80, 'y': 80, 'logic': 'SQUARESUM', 'decay': solid(0.025),
+         'color': [200, 200, 160], 'alpha': 0.35},
+        # Stars (tiny bright dots)
+        *[{'x': random.randint(0, W), 'y': random.randint(0, int(H * 0.55)),
+           'logic': 'MAX', 'max_clamp': random.randint(1, 3),
+           'decay': solid(0.0), 'color': [255, 255, 255], 'alpha': random.uniform(0.4, 1.0)}
+          for _ in range(40)],
+        # Far mountain (blue-grey)
+        {'x': CX, 'y': int(H * 0.58), 'logic': 'SQUARESUM',
+         'decay': {'east_inward': 0.007, 'east_outward': 0.007,
+                   'west_inward': 0.007, 'west_outward': 0.007,
+                   'north_inward': 0.012, 'north_outward': 0.012,
+                   'south_inward': 0.03, 'south_outward': 0.03},
+         'color': [70, 90, 130], 'alpha': 0.95},
+        # Near mountain (dark)
+        {'x': CX + 60, 'y': int(H * 0.68), 'logic': 'SQUARESUM',
+         'decay': {'east_inward': 0.008, 'east_outward': 0.008,
+                   'west_inward': 0.008, 'west_outward': 0.008,
+                   'north_inward': 0.014, 'north_outward': 0.014,
+                   'south_inward': 0.025, 'south_outward': 0.025},
+         'color': [30, 40, 60], 'alpha': 1.0},
+        # Foreground ground
+        {'x': CX, 'y': H + 80, 'logic': 'MAX', 'decay': solid(0.005),
+         'color': [15, 25, 40], 'alpha': 1.0},
+        # Water reflection
+        {'x': CX, 'y': int(H * 0.78), 'logic': 'SQUARESUM',
+         'modulation': 'RAMP', 'period': 12, 'shift': 4,
+         'decay': {'east_inward': 0.005, 'east_outward': 0.005,
+                   'west_inward': 0.005, 'west_outward': 0.005,
+                   'north_inward': 0.05, 'north_outward': 0.05,
+                   'south_inward': 0.02, 'south_outward': 0.02},
+         'color': [60, 100, 180], 'alpha': 0.55},
+    ]
+    random.seed(99)
+    samples.append({'width': W, 'height': H, 'background_color': [10, 15, 35, 255],
+                    'layers': [{'kernels': s14_kernels}]})
+
+    # ----------------------------------------------------------
+    # 15. PSYCHEDELIC EYE — deep nested alternating rings
+    # ----------------------------------------------------------
+    s15_kernels = [{'x': CX, 'y': CY, 'logic': 'SQUARESUM',
+                    'decay': solid(0.003), 'color': [20, 0, 40], 'alpha': 1.0}]
+    ring_palette = [
+        [255, 0, 120], [255, 100, 0], [255, 220, 0], [0, 220, 100],
+        [0, 180, 255], [120, 0, 255], [255, 255, 255]
+    ]
+    for i in range(18):
+        inner = 8 + i * 10
+        outer = inner + 8
+        col = ring_palette[i % len(ring_palette)]
+        s15_kernels.append({
+            'x': CX, 'y': CY, 'logic': 'MAX',
+            'min_clamp': inner, 'max_clamp': outer,
+            'decay': solid(0.0), 'color': col
+        })
+    # Pupil
+    s15_kernels.append({'x': CX, 'y': CY, 'logic': 'MAX', 'max_clamp': 7,
+                        'decay': solid(0.0), 'color': [5, 5, 5]})
+    # Radial iris lines
+    for i in range(24):
+        s15_kernels.append({'x': CX, 'y': CY, 'angle': i * 15, 'logic': 'MAX',
+                            'min_clamp': 8, 'max_clamp': 185,
+                            'decay': {'east_inward': 0.25, 'east_outward': 0.25,
+                                      'west_inward': 0.25, 'west_outward': 0.25,
+                                      'north_inward': 0.0, 'north_outward': 0.0,
+                                      'south_inward': 0.0, 'south_outward': 0.0},
+                            'color': [0, 0, 0], 'alpha': 0.35})
+    samples.append({'width': W, 'height': H, 'background_color': [5, 0, 10, 255],
+                    'layers': [{'kernels': s15_kernels}]})
+
+    # ----------------------------------------------------------
+    # Render all
+    # ----------------------------------------------------------
+    for idx, scn in enumerate(samples):
+        name = f"sample{idx+1:02d}"
+        with gzip.open(f"samples/{name}.vkb", "wb") as f:
+            f.write(json.dumps(scn).encode('utf-8'))
+        t0 = time.time()
+        print(f"Rendering {name}...", end=' ', flush=True)
+        img_arr = process_vke_scene(scn, scn['width'], scn['height'], scn['background_color'])
+        img = Image.fromarray(img_arr, 'RGBA')
+        img.save(f"output/{name}.png")
+        print(f"done in {time.time()-t0:.2f}s")
+
+
+if __name__ == "__main__":
+    generate_samples()
+
     os.makedirs('samples', exist_ok=True)
     os.makedirs('output', exist_ok=True)
 
