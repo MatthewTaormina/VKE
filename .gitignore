@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+*.pyo
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.sublime-project
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Large generated files (keep .vkb and .png outputs, exclude raw JSON blobs)
+test_out*.json
+test_out_2*.json
+
+# Gemini agent working directory
+.gemini/
