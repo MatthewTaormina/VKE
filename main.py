@@ -49,7 +49,9 @@ def process_vke_scene(scene_data, width, height, bg_color):
     templates = scene_data.get('templates', {})
 
     for layer in layers:
-        layer_buffer = np.zeros((height, width, 4), dtype=np.float32)
+        # Weighted-average accumulators: sum(color*w) and sum(w) per pixel
+        color_accum = np.zeros((height, width, 3), dtype=np.float32)
+        weight_accum = np.zeros((height, width), dtype=np.float32)
         kernels = layer.get('kernels', [])
         groups = layer.get('groups', [])
 
@@ -100,12 +102,15 @@ def process_vke_scene(scene_data, width, height, bg_color):
             logic = kernel.get('logic', 'MULTIPLY').upper()
             color = np.array(kernel.get('color', [255, 255, 255]), dtype=np.float32)
             alpha = kernel.get('alpha', 1.0)
+            clamp_decay = float(kernel.get('clamp_decay', 0.0))
 
             # Calculate fast bounding box to avoid full-screen numpy maths
             min_decay = min([d for d in [d_e_in, d_e_out, d_w_in, d_w_out, d_n_in, d_n_out, d_s_in, d_s_out] if d > 0] or [0.0001])
             r_decay = (1.0 / min_decay) + shift
             
-            R = min(max_clamp, r_decay)
+            # Bounding box — extend by soft clamp fade zone if clamp_decay is set
+            fade_extend = (1.0 / clamp_decay) if clamp_decay > 0 else 0.0
+            R = min(max_clamp + fade_extend, r_decay)
             if 'bounds' in kernel:
                 bx1, by1, bx2, by2 = kernel['bounds']
                 rb = np.sqrt(max(bx1**2, bx2**2) + max(by1**2, by2**2))
@@ -208,17 +213,41 @@ def process_vke_scene(scene_data, width, height, bg_color):
                 weight_comb = weight_x * weight_y
 
             final_weight = weight_comb * alpha
-            final_weight[~valid_mask] = 0.0
 
-            # Accumulate on layer view
+            if clamp_decay > 0:
+                # Soft euclidean clamp: smooth fade at both ring edges.
+                # inner_w fades from 0→1 as d_euc crosses min_clamp inward.
+                # outer_w fades from 1→0 as d_euc crosses max_clamp outward.
+                # Product gives smooth bubble-edge shape.
+                inner_w = np.clip((d_euc - min_clamp) * clamp_decay, 0.0, 1.0)
+                outer_w = np.clip((max_clamp - d_euc) * clamp_decay, 0.0, 1.0)
+                clamp_w = inner_w * outer_w
+                if 'bounds' in kernel:
+                    bx1, by1, bx2, by2 = kernel['bounds']
+                    bounds_mask = ((local_x >= bx1) & (local_x <= bx2) &
+                                   (local_y >= by1) & (local_y <= by2))
+                    clamp_w[~bounds_mask] = 0.0
+                final_weight *= clamp_w
+            else:
+                # Hard binary clamp (original behaviour)
+                final_weight[~valid_mask] = 0.0
+
+            # Accumulate into weighted-average buffers
             active = final_weight > 0
             if np.any(active):
-                fw = final_weight[active, np.newaxis]
-                lb_view = layer_buffer[y1:y2, x1:x2]
-                lb_view[active, 0:3] = color * fw + lb_view[active, 0:3] * (1.0 - fw)
-                lb_view[active, 3] = np.maximum(lb_view[active, 3], fw.squeeze() * 255.0)
+                fw = final_weight[active]
+                ca_view = color_accum[y1:y2, x1:x2]
+                wa_view = weight_accum[y1:y2, x1:x2]
+                ca_view[active] += color[np.newaxis, :] * fw[:, np.newaxis]
+                wa_view[active] += fw
 
-        # Merge layer
+        # Finalise layer: weighted average colour, clamped alpha
+        layer_buffer = np.zeros((height, width, 4), dtype=np.float32)
+        covered = weight_accum > 0
+        layer_buffer[covered, 0:3] = color_accum[covered] / weight_accum[covered, np.newaxis]
+        layer_buffer[covered, 3] = np.minimum(weight_accum[covered], 1.0) * 255.0
+
+        # Merge layer into canvas (over composite)
         layer_alpha = layer_buffer[:, :, 3:4] / 255.0
         image_buffer[:, :, 0:3] = layer_buffer[:, :, 0:3] * layer_alpha + image_buffer[:, :, 0:3] * (1.0 - layer_alpha)
         image_buffer[:, :, 3:4] = np.maximum(image_buffer[:, :, 3:4], layer_buffer[:, :, 3:4])
@@ -362,24 +391,61 @@ def generate_samples():
                     'layers': [{'kernels': s6_kernels}]})
 
     # ----------------------------------------------------------
-    # 7. OCEAN RIPPLES — RAMP concentric rings across canvas
+    # 7. RIPPLES — 3D Bevelled Soft Waves
     # ----------------------------------------------------------
+    ring_w = 14
+    ring_gap = 26
+
     s7_kernels = [
-        {'x': CX, 'y': CY + 60, 'logic': 'SQUARESUM',
-         'modulation': 'RAMP', 'period': 28, 'shift': 12,
-         'decay': {'east_inward': 0.004, 'east_outward': 0.004,
-                   'west_inward': 0.004, 'west_outward': 0.004,
-                   'north_inward': 0.01, 'north_outward': 0.01,
-                   'south_inward': 0.002, 'south_outward': 0.002},
-         'color': [30, 150, 255], 'alpha': 0.9},
-        # Water surface tint
-        {'x': CX, 'y': H + 100, 'logic': 'MAX', 'decay': solid(0.004),
-         'color': [0, 60, 120], 'alpha': 0.6},
-        # Sky
-        {'x': CX, 'y': -100, 'logic': 'MAX', 'decay': solid(0.004),
-         'color': [80, 160, 255], 'alpha': 0.6},
+        # Bright water base
+        {'x': CX, 'y': CY, 'logic': 'MAX', 'decay': solid(0.003), 'color': [20, 50, 90]},
     ]
-    samples.append({'width': W, 'height': H, 'background_color': [10, 30, 80, 255],
+
+    # Source 1 — primary centre
+    for r in range(ring_gap, 200, ring_gap + ring_w):
+        fade = max(0.5, 1.0 - r / 250) 
+        # 3D shadow (offset down/right, very dark)
+        s7_kernels.append({
+            'x': CX + 3, 'y': CY + 15 + 3, 'logic': 'MAX', 'decay': solid(0.0),
+            'min_clamp': float(r), 'max_clamp': float(r + ring_w),
+            'clamp_decay': 0.18, 'color': [0, 10, 30], 'alpha': fade * 0.95
+        })
+        # 3D crest (offset up/left, neon bright)
+        s7_kernels.append({
+            'x': CX - 1, 'y': CY + 15 - 1, 'logic': 'MAX', 'decay': solid(0.0),
+            'min_clamp': float(r), 'max_clamp': float(r + ring_w),
+            'clamp_decay': 0.18, 'color': [0, 200, 255], 'alpha': fade
+        })
+
+    # Source 2 — offset lower-left
+    for r in range(ring_gap - 4, 140, ring_gap + ring_w - 4):
+        fade = max(0.4, 1.0 - r / 160)
+        s7_kernels.append({
+            'x': CX - 88 + 3, 'y': CY + 58 + 3, 'logic': 'MAX', 'decay': solid(0.0),
+            'min_clamp': float(r), 'max_clamp': float(r + ring_w - 1),
+            'clamp_decay': 0.18, 'color': [0, 10, 30], 'alpha': fade * 0.95
+        })
+        s7_kernels.append({
+            'x': CX - 88 - 1, 'y': CY + 58 - 1, 'logic': 'MAX', 'decay': solid(0.0),
+            'min_clamp': float(r), 'max_clamp': float(r + ring_w - 1),
+            'clamp_decay': 0.18, 'color': [0, 200, 255], 'alpha': fade
+        })
+
+    # Source 3 — offset upper-right
+    for r in range(ring_gap - 6, 100, ring_gap + ring_w - 6):
+        fade = max(0.4, 0.9 - r / 120)
+        s7_kernels.append({
+            'x': CX + 78 + 3, 'y': CY - 42 + 3, 'logic': 'MAX', 'decay': solid(0.0),
+            'min_clamp': float(r), 'max_clamp': float(r + ring_w - 2),
+            'clamp_decay': 0.18, 'color': [0, 10, 30], 'alpha': fade * 0.95
+        })
+        s7_kernels.append({
+            'x': CX + 78 - 1, 'y': CY - 42 - 1, 'logic': 'MAX', 'decay': solid(0.0),
+            'min_clamp': float(r), 'max_clamp': float(r + ring_w - 2),
+            'clamp_decay': 0.18, 'color': [0, 200, 255], 'alpha': fade
+        })
+
+    samples.append({'width': W, 'height': H, 'background_color': [25, 45, 75, 255],
                     'layers': [{'kernels': s7_kernels}]})
 
     # ----------------------------------------------------------
