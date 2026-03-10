@@ -148,17 +148,27 @@ def vectorize_image(input_path, output_path, block_size=10, max_block=32):
     }
     
     if output_path.endswith('.vkb'):
-        print(f"Compressing to VKB binary: {output_path}...")
+        print(f"Compressing to VKB2 binary: {output_path}...")
         with gzip.open(output_path, "wb") as f:
-            # Header: 4s (VKB1), H (w), H (h), B B B (bg), I (count) = 15 bytes
-            f.write(struct.pack('<4sHHBBBI', b'VKB1', w, h, bg_color[0], bg_color[1], bg_color[2], len(kernels)))
-            # Kernels: f f (x,y), f f (hw, hh), B B B (r,g,b), B (angle) = 20 bytes per kernel
+            # VKB2 Header: 4s (VKB2), H (w), H (h), B B B B (bg_rgba), I (count) = 16 bytes
+            f.write(struct.pack('<4sHHBBBBI', b'VKB2', w, h, bg_color[0], bg_color[1], bg_color[2], 255, len(kernels)))
+            
+            # VKB2 Kernels: H H (x,y), H H (hw,hh), B B B B B B (r,g,b,alpha,decay,theta) = 14 bytes per kernel
             for k in kernels:
-                hw = k['bounds'][2]
-                hh = k['bounds'][3]
-                angle_mapped = int((k['angle'] / 360.0) * 255.0)
-                f.write(struct.pack('<ffffBBBB', float(k['x']), float(k['y']), float(hw), float(hh), k['color'][0], k['color'][1], k['color'][2], angle_mapped))
-        print(f"Saved true binary VKE scene to {output_path}")
+                # Normalize geometry to uint16 (0-65535) using round to minimize bias
+                xq = int(np.clip(np.round(k['x'] / w * 65535), 0, 65535))
+                yq = int(np.clip(np.round(k['y'] / h * 65535), 0, 65535))
+                hwq = int(np.clip(np.round(k['bounds'][2] / w * 65535), 0, 65535))
+                hhq = int(np.clip(np.round(k['bounds'][3] / h * 65535), 0, 65535))
+                
+                # Colors
+                r, g, b = k['color']
+                alpha = int(k.get('alpha', 1.0) * 255)
+                decay = int(k.get('clamp_decay', 0.0) * 255)
+                theta = int((k['angle'] / 360.0) * 255.0)
+                
+                f.write(struct.pack('<HHHHBBBBBB', xq, yq, hwq, hhq, r, g, b, alpha, decay, theta))
+        print(f"Saved VKB2 binary scene to {output_path}")
     else:
         with open(output_path, "w") as f:
             json.dump(scene, f, indent=2)

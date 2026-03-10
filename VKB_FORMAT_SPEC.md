@@ -14,16 +14,21 @@ The format has **two sub-types** distinguished by a magic header:
 
 | Sub-type | Magic | Description |
 |----------|-------|-------------|
-| **Struct VKB** | `VKB1` | Pure binary struct records (vectorizer output) |
-| **JSON VKB**   | _(any other)_ | gzip-compressed JSON scene (hand-crafted scenes) |
+| **VKB1** | `VKB1` | Legacy binary struct records |
+| **VKB2** | `VKB2` | Modern quantized binary struct records (Default) |
+| **JSON VKB**   | _(any other)_ | gzip-compressed JSON scene (hand-crafted) |
 
 Both are stored with a `.vkb` extension and loaded identically by `render.py`.
 
 ---
 
-## Sub-type 1: Struct VKB (`VKB1`)
+## Binary Sub-types
 
-Used by `vectorizer.py` when converting a photo or image to a compact binary scene.
+There are two generations of binary struct formats.
+
+### Sub-type 1: Struct VKB (`VKB1`) [Legacy]
+
+Used by older versions of `vectorizer.py`.
 
 ### File Layout
 
@@ -69,7 +74,58 @@ One record per kernel, packed sequentially immediately after the header.
 
 **Python struct format:** `'<ffffBBBB'` (20 bytes total)
 
-> **Note:** `float32` is used for geometry to guarantee sub-pixel accuracy across canvas sizes up to 65 535 × 65 535 pixels (the `uint16` canvas dimension limit).
+> **Note:** `float32` is used for geometry in VKB1, but this results in large file sizes.
+
+---
+
+### Sub-type 2: Struct VKB (`VKB2`) [Current]
+
+Used by `vectorizer.py` for high-quality, high-compression output. Uses 16-bit quantization for geometry and adds alpha/decay support.
+
+### File Layout
+
+```
+[FILE HEADER — 16 bytes]
+[KERNEL RECORDS — 14 bytes × kernel_count]
+```
+
+### File Header (16 bytes)
+
+| Offset | Size | Type     | Field           | Description |
+|--------|------|----------|-----------------|-------------|
+| 0      | 4    | `char[4]`| `magic`         | Always `VKB2` (ASCII). |
+| 4      | 2    | `uint16` | `width`         | Canvas width. |
+| 6      | 2    | `uint16` | `height`        | Canvas height. |
+| 8      | 1    | `uint8`  | `bg_r`          | Background colour — RED. |
+| 9      | 1    | `uint8`  | `bg_g`          | Background colour — GREEN. |
+| 10     | 1    | `uint8`  | `bg_b`          | Background colour — BLUE. |
+| 11     | 1    | `uint8`  | `bg_a`          | Background colour — ALPHA. |
+| 12     | 4    | `uint32` | `kernel_count`  | Total kernel records. |
+
+**Python struct format:** `'<4sHHBBBBI'` (16 bytes total)
+
+---
+
+### Kernel Record (14 bytes)
+
+Packed sequentially after the header.
+
+| Offset | Size | Type      | Field     | Description |
+|--------|------|-----------|-----------|-------------|
+| 0      | 2    | `uint16`  | `x_q`     | Normalized X: `int(x / width * 65535)` |
+| 2      | 2    | `uint16`  | `y_q`     | Normalized Y: `int(y / height * 65535)` |
+| 4      | 2    | `uint16`  | `hw_q`    | Normalized Half-W: `int(hw / width * 65535)` |
+| 6      | 2    | `uint16`  | `hh_q`    | Normalized Half-H: `int(hh / height * 65535)` |
+| 8      | 1    | `uint8`   | `r`       | Color — RED. |
+| 9      | 1    | `uint8`   | `g`       | Color — GREEN. |
+| 10     | 1    | `uint8`   | `b`       | Color — BLUE. |
+| 11     | 1    | `uint8`   | `a`       | Color — ALPHA. |
+| 12     | 1    | `uint8`   | `decay`   | Edge Softness: `int(clamp_decay * 255)`. |
+| 13     | 1    | `uint8`   | `theta`   | Rotation: `int(angle / 360.0 * 255.0)`. |
+
+**Python struct format:** `'<HHHHBBBBBB'` (14 bytes total)
+
+> **Normalization:** To reconstruct geometry: `val = (val_q / 65535.0) * canvas_dim`.
 
 ---
 
@@ -233,14 +289,23 @@ import gzip, struct, json
 
 with gzip.open('scene.vkb', 'rb') as f:
     magic = f.read(4)
-    if magic == b'VKB1':
-        # Struct VKB
-        w, h, bg_r, bg_g, bg_b, k_count = struct.unpack('<HHBBBI', f.read(11))
+    if magic == b'VKB2':
+        # Struct VKB (Modern)
+        w, h, br, bg, bb, ba, k_count = struct.unpack('<HHBBBBI', f.read(12))
         kernels = []
         for _ in range(k_count):
-            x, y, hw, hh, r, g, b, theta = struct.unpack('<ffffBBBB', f.read(20))
-            kernels.append({'x': x, 'y': y, 'color': [r, g, b],
-                            'half_w': hw, 'half_h': hh, 'theta': theta})
+            xq, yq, hwq, hhq, r, g, b, a, d, t = struct.unpack('<HHHHBBBBBB', f.read(14))
+            # De-normalize
+            x = (xq / 65535.0) * w
+            y = (yq / 65535.0) * h
+            hw = (hwq / 65535.0) * w
+            hh = (hhq / 65535.0) * h
+            kernels.append({'x': x, 'y': y, 'color': [r, g, b], 'alpha': a/255.0,
+                            'half_w': hw, 'half_h': hh, 'decay': d/255.0, 'theta': t})
+    elif magic == b'VKB1':
+        # Struct VKB (Legacy)
+        w, h, br, bg, bb, k_count = struct.unpack('<HHBBBI', f.read(11))
+        # ... (unpack records as before)
     else:
         # JSON VKB — seek back to start of gzip payload
         f.seek(0)

@@ -39,12 +39,35 @@ def render(json_path, output_png):
         import struct
         with gzip.open(json_path, "rb") as f:
             magic = f.read(4)
-            if magic != b'VKB1':
-                # Try fallback just in case it's an old JSON .vkb
-                f.seek(0)
-                json_str = f.read().decode('utf-8')
-                scene = json.loads(json_str)
-            else:
+            if magic == b'VKB2':
+                # Struct VKB2 (Modern Quantized)
+                w, h, br, bg, bb, ba, k_count = struct.unpack('<HHBBBBI', f.read(12))
+                kernels = []
+                for _ in range(k_count):
+                    xq, yq, hwq, hhq, r, g, b, a, d, t = struct.unpack('<HHHHBBBBBB', f.read(14))
+                    # De-quantize with tiny epsilon for seamless tiling
+                    kx = (xq / 65535.0) * w
+                    ky = (yq / 65535.0) * h
+                    hw = (hwq / 65535.0) * w + 0.01
+                    hh = (hhq / 65535.0) * h + 0.01
+                    angle = (t / 255.0) * 360.0
+                    
+                    kernels.append({
+                        'x': kx, 'y': ky, 'color': [r, g, b], 'alpha': a/255.0,
+                        'clamp_decay': d/255.0,
+                        # Vectorizer output is quadtree/tiling based; rotation breaks the grid.
+                        # We only apply angle if d > 0 (implying a 'soft stroke' intent) 
+                        # or if explicitly desired. For now, we prefer tiling stability.
+                        'angle': angle if d > 0 else 0,
+                        'bounds': [-hw, -hh, hw, hh],
+                        'decay': {k: 0.0 for k in ['east_inward', 'east_outward', 'west_inward', 'west_outward',
+                                                  'north_inward', 'north_outward', 'south_inward', 'south_outward']}
+                    })
+                scene = {
+                    'width': w, 'height': h, 'background_color': [br, bg, bb, ba],
+                    'layers': [{'kernels': kernels}]
+                }
+            elif magic == b'VKB1':
                 header_data = f.read(11)
                 w, h, bg_r, bg_g, bg_b, k_count = struct.unpack('<HHBBBI', header_data)
                 
@@ -52,19 +75,13 @@ def render(json_path, output_png):
                 for _ in range(k_count):
                     k_data = f.read(20)
                     kx, ky, hw, hh, kr, kg, kb, theta = struct.unpack('<ffffBBBB', k_data)
+                    angle = (theta / 255.0) * 360.0
                     
-                    # Axis-aligned bounds + zero decay = perfect seamless solid tiling.
-                    # Rotation with bounds leaves uncovered corner gaps, so no angle here.
                     kernels.append({
                         'x': float(kx), 'y': float(ky),
                         'color': [int(kr), int(kg), int(kb)],
                         'bounds': [float(-hw), float(-hh), float(hw), float(hh)],
-                        'decay': {
-                            'east_inward':   0.0, 'east_outward':  0.0,
-                            'west_inward':   0.0, 'west_outward':  0.0,
-                            'north_inward':  0.0, 'north_outward': 0.0,
-                            'south_inward':  0.0, 'south_outward': 0.0,
-                        }
+                        'angle': angle
                     })
                 
                 scene = {
@@ -73,6 +90,11 @@ def render(json_path, output_png):
                     'background_color': [int(bg_r), int(bg_g), int(bg_b), 255],
                     'layers': [{'blend_mode': 'normal', 'kernels': kernels}]
                 }
+            else:
+                # Try fallback just in case it's an old JSON .vkb
+                f.seek(0)
+                json_str = f.read().decode('utf-8')
+                scene = json.loads(json_str)
     else:
         with open(json_path, 'r') as f:
             scene = json.load(f)

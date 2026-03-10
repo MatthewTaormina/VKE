@@ -732,10 +732,43 @@ def generate_samples():
     # ----------------------------------------------------------
     for idx, scn in enumerate(samples):
         name = f"sample{idx+1:02d}"
-        with gzip.open(f"samples/{name}.vkb", "wb") as f:
-            f.write(json.dumps(scn).encode('utf-8'))
+        path = f"samples/{name}.vkb"
+        
+        # Determine if we should save as VKB2 (modern) or JSON (mockup/special)
+        # Note: generate_samples usually writes JSON-wrapped-in-gzip for hand-crafted scenes.
+        # But for VKB2 transition, we can force VKB2 for any scene.
+        
+        with gzip.open(path, "wb") as f:
+             # VKB2 Header: 4s (VKB2), H (w), H (h), B B B B (bg_rgba), I (count) = 16 bytes
+             # We convert the JSON scene to kernels for VKB2 export
+             flat_kernels = []
+             for layer in scn.get('layers', []):
+                 flat_kernels.extend(layer.get('kernels', []))
+             
+             bg = scn.get('background_color', [0,0,0,255])
+             f.write(struct.pack('<4sHHBBBBI', b'VKB2', scn['width'], scn['height'], bg[0], bg[1], bg[2], bg[3], len(flat_kernels)))
+             
+             for k in flat_kernels:
+                xq = int(np.clip(k['x'] / scn['width'] * 65535, 0, 65535))
+                yq = int(np.clip(k['y'] / scn['height'] * 65535, 0, 65535))
+                # For half_w/h, we need to handle both point kernels and bounded kernels
+                hw, hh = 0, 0
+                if 'bounds' in k:
+                    hw = k['bounds'][2]
+                    hh = k['bounds'][3]
+                
+                hwq = int(np.clip(hw / scn['width'] * 65535, 0, 65535))
+                hhq = int(np.clip(hh / scn['height'] * 65535, 0, 65535))
+                
+                r, g, b = k.get('color', [255,255,255])
+                alpha = int(k.get('alpha', 1.0) * 255)
+                decay = int(k.get('clamp_decay', 0.0) * 255)
+                theta = int((k.get('angle', 0) / 360.0) * 255.0)
+                
+                f.write(struct.pack('<HHHHBBBBBB', xq, yq, hwq, hhq, r, g, b, alpha, decay, theta))
+
         t0 = time.time()
-        print(f"Rendering {name}...", end=' ', flush=True)
+        print(f"Rendering {name} (VKB2 format)...", end=' ', flush=True)
         img_arr = process_vke_scene(scn, scn['width'], scn['height'], scn['background_color'])
         img = Image.fromarray(img_arr, 'RGBA')
         img.save(f"output/{name}.png")
@@ -743,277 +776,74 @@ def generate_samples():
 
 
 if __name__ == "__main__":
-    generate_samples()
+    import struct
+    import argparse
 
-    os.makedirs('samples', exist_ok=True)
-    os.makedirs('output', exist_ok=True)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--samples", action="store_true", help="Generate and render all samples")
+    parser.add_argument("--input", help="Path to a .vkb file to render")
+    parser.add_argument("--output", help="Path to save the PNG output")
+    args = parser.parse_args()
 
-    tight_decay = {k: 0.1 for k in ['east_inward', 'east_outward', 'west_inward', 'west_outward', 
-                                     'north_inward', 'north_outward', 'south_inward', 'south_outward']}
-    
-    samples = []
-
-    # 1. Circle (solid, clipped to circle shape)
-    samples.append({
-        'width': 200, 'height': 200, 'background_color': [20, 20, 30, 255],
-        'layers': [{'kernels': [{
-            'x': 100, 'y': 100, 'modulation': 'CONTINUOUS', 'shift': 0,
-            'decay': {'east_inward': 0, 'east_outward': 0, 'west_inward': 0, 'west_outward': 0,
-                      'north_inward': 0, 'north_outward': 0, 'south_inward': 0, 'south_outward': 0},
-            'color': [255, 100, 100], 'logic': 'MAX', 'max_clamp': 60
-        }]}]
-    })
-
-    # 2. Donut (using min_clamp to create hole)
-    samples.append({
-        'width': 200, 'height': 200, 'background_color': [20, 20, 30, 255],
-        'layers': [{'kernels': [{
-            'x': 100, 'y': 100, 'modulation': 'CONTINUOUS', 'shift': 0,
-            'decay': {'east_inward': 0, 'east_outward': 0, 'west_inward': 0, 'west_outward': 0,
-                      'north_inward': 0, 'north_outward': 0, 'south_inward': 0, 'south_outward': 0},
-            'color': [100, 255, 100], 'logic': 'MAX', 'min_clamp': 40, 'max_clamp': 80
-        }]}]
-    })
-
-    # 3. Half Circle (uses max clamp for circle, bounds for cut)
-    samples.append({
-        'width': 200, 'height': 200, 'background_color': [20, 20, 30, 255],
-        'layers': [{'kernels': [{
-            'x': 100, 'y': 100, 'modulation': 'CONTINUOUS', 'shift': 0,
-            'decay': {'east_inward': 0, 'east_outward': 0, 'west_inward': 0, 'west_outward': 0,
-                      'north_inward': 0, 'north_outward': 0, 'south_inward': 0, 'south_outward': 0},
-            'color': [100, 100, 255], 'logic': 'MAX', 'max_clamp': 80,
-            'bounds': [0, -100, 100, 100] # Right half only (local_x >= 0)
-        }]}]
-    })
-
-    # 4. Moon (Crescent - donut clipped)
-    samples.append({
-        'width': 200, 'height': 200, 'background_color': [20, 20, 30, 255],
-        'layers': [{'kernels': [{
-            'x': 100, 'y': 100, 'modulation': 'CONTINUOUS', 'shift': 0,
-            'decay': {'east_inward': 0, 'east_outward': 0, 'west_inward': 0, 'west_outward': 0,
-                      'north_inward': 0, 'north_outward': 0, 'south_inward': 0, 'south_outward': 0},
-            'color': [255, 255, 100], 'logic': 'MAX', 'min_clamp': 40, 'max_clamp': 80,
-            'bounds': [-100, 0, 100, 100] # Bottom half of donut
-        }]}]
-    })
-
-    # 5. Rectangle
-    samples.append({
-        'width': 200, 'height': 200, 'background_color': [20, 20, 30, 255],
-        'layers': [{'kernels': [{
-            'x': 100, 'y': 100, 'angle': 45, 'modulation': 'CONTINUOUS', 'shift': 0,
-            'decay': tight_decay, 'color': [255, 100, 255], 'logic': 'MIN'
-        }]}]
-    })
-
-    # 6. Ellipse (Stretched by different decays)
-    samples.append({
-        'width': 200, 'height': 200, 'background_color': [20, 20, 30, 255],
-        'layers': [{'kernels': [{
-            'x': 100, 'y': 100, 'modulation': 'CONTINUOUS', 'shift': 0,
-            'decay': {'east_inward': 0.02, 'east_outward': 0.02, 'west_inward': 0.02, 'west_outward': 0.02,
-                      'north_inward': 0.1, 'north_outward': 0.1, 'south_inward': 0.1, 'south_outward': 0.1},
-            'color': [100, 255, 255], 'logic': 'SQUARESUM'
-        }]}]
-    })
-
-    # 7. Line
-    samples.append({
-        'width': 200, 'height': 200, 'background_color': [20, 20, 30, 255],
-        'layers': [{'kernels': [{
-            'x': 100, 'y': 100, 'angle': 30, 'modulation': 'CONTINUOUS', 'shift': 0,
-            'decay': {'east_inward': 0.01, 'east_outward': 0.01, 'west_inward': 0.01, 'west_outward': 0.01,
-                      'north_inward': 0.5, 'north_outward': 0.5, 'south_inward': 0.5, 'south_outward': 0.5},
-            'color': [255, 255, 255], 'logic': 'MIN'
-        }]}]
-    })
-
-    # 8. Gradient Over Image
-    samples.append({
-        'width': 200, 'height': 200, 'background_color': [0, 0, 0, 255],
-        'layers': [{'kernels': [
-            {
-                'x': 0, 'y': 0, 'modulation': 'CONTINUOUS', 'shift': 0,
-                'decay': {k: 0.005 for k in tight_decay.keys()},
-                'color': [255, 50, 50], 'logic': 'MAX', 'alpha': 0.8
-            },
-            {
-                'x': 200, 'y': 200, 'modulation': 'CONTINUOUS', 'shift': 0,
-                'decay': {k: 0.005 for k in tight_decay.keys()},
-                'color': [50, 50, 255], 'logic': 'MAX', 'alpha': 0.8
-            }
-        ]}]
-    })
-
-    # 9. Organic Cells (Parabolic)
-    samples.append({
-        'width': 200, 'height': 200, 'background_color': [10, 40, 20, 255],
-        'layers': [{'kernels': [{
-            'x': 100, 'y': 100, 'modulation': 'PARABOLIC', 'period': 40, 'shift': 0, 'parabola_scale': 15,
-            'decay': {k: 0.05 for k in tight_decay.keys()}, 'color': [100, 200, 255], 'logic': 'MULTIPLY'
-        }]}]
-    })
-
-    # 10. Ripples (RAMP)
-    samples.append({
-        'width': 200, 'height': 200, 'background_color': [255, 255, 255, 255],
-        'layers': [{'kernels': [{
-            'x': 100, 'y': 100, 'modulation': 'RAMP', 'period': 20, 'shift': 10,
-            'decay': {k: 0.05 for k in tight_decay.keys()}, 'color': [50, 50, 50], 'logic': 'MIN'
-        }]}]
-    })
-
-    # 11. Waves (TRIANGLE)
-    samples.append({
-        'width': 200, 'height': 200, 'background_color': [10, 10, 10, 255],
-        'layers': [{'kernels': [{
-            'x': 100, 'y': 100, 'modulation': 'TRIANGLE', 'period': 30, 'shift': 0,
-            'decay': {k: 0.02 for k in tight_decay.keys()}, 'color': [255, 100, 100], 'logic': 'SQUARESUM'
-        }]}]
-    })
-
-    # 12. Star
-    star_layer = {'kernels': []}
-    for i in range(4):
-        star_layer['kernels'].append({
-            'x': 100, 'y': 100, 'angle': i * 45, 'modulation': 'CONTINUOUS', 'shift': 0,
-            'decay': {'east_inward': 0.02, 'east_outward': 0.02, 'west_inward': 0.02, 'west_outward': 0.02,
-                      'north_inward': 0.2, 'north_outward': 0.2, 'south_inward': 0.2, 'south_outward': 0.2},
-            'color': [255, 255, 0], 'logic': 'MAX', 'alpha': 0.8
-        })
-    samples.append({
-        'width': 200, 'height': 200, 'background_color': [20, 20, 50, 255],
-        'layers': [star_layer]
-    })
-
-    # 13. Grid / Templates
-    samples.append({
-        'width': 200, 'height': 200, 'background_color': [0, 0, 0, 255],
-        'templates': {
-            'dot': {
-                'modulation': 'CONTINUOUS', 'shift': 5,
-                'decay': {k: 0.2 for k in tight_decay.keys()}, 'logic': 'SQUARESUM', 'color': [200, 200, 200]
-            }
-        },
-        'layers': [{'groups': [
-            {'x': cx, 'y': cy, 'kernels': [{'template': 'dot'}]}
-            for cx in range(20, 200, 40) for cy in range(20, 200, 40)
-        ]}]
-    })
-
-    # 14. Fractal (Sample 5 original)
-    complex_layer = {'kernels': []}
-    for i in range(5):
-        complex_layer['kernels'].append({
-            'x': 100, 'y': 100, 'angle': i * 15,
-            'modulation': 'PARABOLIC', 'period': 60, 'shift': i*5, 'parabola_scale': 10,
-            'color': [50 * i, 255 - 40 * i, 150 + 20 * i], 
-            'decay': {k: 0.05 for k in tight_decay.keys()},
-            'logic': 'SQUARESUM', 'alpha': 0.5
-        })
-    samples.append({
-        'width': 200, 'height': 200, 'background_color': [10, 10, 10, 255],
-        'layers': [complex_layer]
-    })
-
-    # 15. Face / Object Art Piece
-    face_layers = []
-    
-    # 15. Face / Object Art Piece (Dotted Art Style)
-    face_layers = []
-    
-    # We will use templates for the "dots"
-    # A dot is just a small circle kernel
-    # By using templates, we save space.
-    templates = {
-        'dot_base': {
-            'modulation': 'CONTINUOUS', 'shift': 0, 'logic': 'MAX', 
-            'decay': {'east_inward': 0, 'east_outward': 0, 'west_inward': 0, 'west_outward': 0,
-                      'north_inward': 0, 'north_outward': 0, 'south_inward': 0, 'south_outward': 0},
-            'max_clamp': 4
-        },
-        'dot_skin': { 'template': 'dot_base', 'color': [240, 200, 160] },
-        'dot_shadow': { 'template': 'dot_base', 'color': [180, 130, 100] },
-        'dot_eye_white': { 'template': 'dot_base', 'color': [255, 255, 255] },
-        'dot_pupil': { 'template': 'dot_base', 'color': [20, 20, 20] },
-        'dot_lip': { 'template': 'dot_base', 'color': [200, 80, 80] },
-        'dot_hair': { 'template': 'dot_base', 'color': [50, 20, 10] }
-    }
-
-    # Generate a dotted circle for the face base
-    face_dots = []
-    
-    # helper to add a dot
-    def add_dot(x, y, temp):
-        face_dots.append({'x': x, 'y': y, 'template': temp})
-
-    # Hair Outline
-    for r in range(120, 160, 8):
-        for angle in range(-40, 220, 5):
-            rad = math.radians(angle)
-            add_dot(200 + r * math.cos(rad), 200 - r * math.sin(rad), 'dot_hair')
-
-    # Face Base (filled circle with dots)
-    for r in range(0, 100, 8):
-        steps = int(r * 2) if r > 0 else 1
-        for i in range(steps):
-            angle = i * (2 * math.pi / max(1, steps))
-            x, y = 200 + r * math.cos(angle), 200 + r * math.sin(angle)
-            
-            # Create a shadow gradient effect towards the edges and bottom
-            if r > 80 or (y > 240 and r > 60):
-                add_dot(x, y, 'dot_shadow')
+    if args.samples:
+        generate_samples()
+    elif args.input:
+        output_path = args.output or args.input.replace('.vkb', '.png')
+        print(f"Loading '{args.input}'...")
+        
+        with gzip.open(args.input, 'rb') as f:
+            magic = f.read(4)
+            if magic == b'VKB2':
+                # Struct VKB2 (Modern Quantized)
+                w, h, br, bg, bb, ba, k_count = struct.unpack('<HHBBBBI', f.read(12))
+                kernels = []
+                for _ in range(k_count):
+                    xq, yq, hwq, hhq, r, g, b, a, d, t = struct.unpack('<HHHHBBBBBB', f.read(14))
+                    # De-quantize and add a tiny epsilon (0.01px) to prevent tiling gaps from float rounding
+                    kx = (xq / 65535.0) * w
+                    ky = (yq / 65535.0) * h
+                    hw = (hwq / 65535.0) * w + 0.01
+                    hh = (hhq / 65535.0) * h + 0.01
+                    angle = (t / 255.0) * 360.0
+                    
+                    k = {
+                        'x': kx, 'y': ky, 'color': [r, g, b], 'alpha': a/255.0,
+                        'clamp_decay': d/255.0, 
+                        'angle': angle if d > 0 else 0,
+                        'bounds': [-hw, -hh, hw, hh],
+                        'decay': {k: 0.0 for k in ['east_inward', 'east_outward', 'west_inward', 'west_outward',
+                                                  'north_inward', 'north_outward', 'south_inward', 'south_outward']}
+                    }
+                    kernels.append(k)
+                scene = {
+                    'width': w, 'height': h, 'background_color': [br, bg, bb, ba],
+                    'layers': [{'kernels': kernels}]
+                }
+            elif magic == b'VKB1':
+                # Struct VKB (Legacy Float32)
+                w, h, br, bg, bb, k_count = struct.unpack('<HHBBBI', f.read(11))
+                kernels = []
+                for _ in range(k_count):
+                    x, y, hw, hh, r, g, b, t = struct.unpack('<ffffBBBB', f.read(20))
+                    angle = (t / 255.0) * 360.0
+                    kernels.append({
+                        'x': x, 'y': y, 'color': [r, g, b],
+                        'bounds': [-hw, -hh, hw, hh], 'angle': angle
+                    })
+                scene = {
+                    'width': w, 'height': h, 'background_color': [br, bg, bb, 255],
+                    'layers': [{'kernels': kernels}]
+                }
             else:
-                add_dot(x, y, 'dot_skin')
+                # JSON VKB
+                f.seek(0)
+                scene = json.loads(f.read().decode('utf-8'))
 
-    # Eyes
-    for ex in [160, 240]:
-        # Eye white
-        for dx, dy in [(-8, 0), (0, -4), (0, 4), (8, 0), (-4, -2), (4, -2), (-4, 2), (4, 2)]:
-            add_dot(ex + dx, 170 + dy, 'dot_eye_white')
-        
-        # Pupil
-        add_dot(ex, 170, 'dot_pupil')
-        
-        # Eyebrow
-        for dx in range(-15, 20, 6):
-            add_dot(ex + dx, 150 - (5 if abs(dx) < 10 else 0), 'dot_hair')
-
-    # Nose
-    for dy in range(180, 220, 8):
-        add_dot(200, dy, 'dot_shadow')
-    add_dot(192, 215, 'dot_shadow')
-    add_dot(208, 215, 'dot_shadow')
-
-    # Mouth
-    for dx in range(-20, 25, 6):
-        # curve the smile
-        y = 250 + (abs(dx) * 0.2)
-        add_dot(200 + dx, y, 'dot_lip')
-        if abs(dx) < 15:
-            add_dot(200 + dx, y + 6, 'dot_lip')
-
-    samples.append({
-        'width': 400, 'height': 400, 'background_color': [20, 20, 30, 255],
-        'templates': templates,
-        'layers': [{'groups': [{'kernels': face_dots}]}]
-    })
-
-    for idx, scn in enumerate(samples):
-        name = f"sample{idx+1:02d}"
-        # Write as gzip-compressed .vkb (JSON payload, fallback-compatible with render.py)
-        with gzip.open(f"samples/{name}.vkb", "wb") as f:
-            f.write(json.dumps(scn).encode('utf-8'))
-        
+        print(f"Rendering scene ({scene['width']}x{scene['height']})...")
         t0 = time.time()
-        print(f"Rendering {name}...")
-        img_arr = process_vke_scene(scn, scn['width'], scn['height'], scn['background_color'])
+        img_arr = process_vke_scene(scene, scene['width'], scene['height'], scene['background_color'])
         img = Image.fromarray(img_arr, 'RGBA')
-        img.save(f"output/{name}.png")
-        print(f"Done {name} in {time.time()-t0:.2f}s")
-
-
-if __name__ == "__main__":
-    generate_samples()
+        img.save(output_path)
+        print(f"Saved to {output_path} (rendered in {time.time()-t0:.2f}s)")
+    else:
+        parser.print_help()
