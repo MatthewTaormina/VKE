@@ -161,6 +161,7 @@ The JSON payload follows the full VKE scene schema:
           "shift": 20,
           "min_clamp": 0,         // Minimum visible distance
           "max_clamp": 200,       // Maximum visible distance
+          "clamp_decay": 0.4,     // Soft-edge slope for min/max clamp (0 = hard mask)
           "logic": "SQUARESUM",   // MULTIPLY | MAX | MIN | SQUARESUM
           "decay": {
             "east_inward":  0.05, "east_outward":  0.05,
@@ -197,6 +198,7 @@ The JSON payload follows the full VKE scene schema:
 | `shift` | number | `0` | Distance zero-point offset |
 | `min_clamp` | number | `0` | Minimum visible euclidean distance |
 | `max_clamp` | number | `∞` | Maximum visible euclidean distance |
+| `clamp_decay` | number | `0` | Soft-edge slope for the clamp boundaries. When `> 0`, replaces the hard binary mask with a smooth linear fade: the inner edge fades in over `1/clamp_decay` pixels from `min_clamp`, and the outer edge fades out over `1/clamp_decay` pixels from `max_clamp`. The two fades are multiplied together to produce a smooth "bubble" cross-section. When `0` (default), hard mask behaviour is preserved. |
 | `logic` | string | `"MULTIPLY"` | X/Y weight combination metric |
 | `decay` | object | `0.05` all | 8 directional decay coefficients |
 | `bounds` | `[x1,y1,x2,y2]` | none | Local bounding-box clip |

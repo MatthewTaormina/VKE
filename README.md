@@ -141,21 +141,21 @@ See **[VKB_FORMAT_SPEC.md](VKB_FORMAT_SPEC.md)** for the complete field-by-field
 
 | # | Scene | Key Features |
 |---|-------|-------------|
-| 01 | Circle | `SQUARESUM` logic, single kernel |
-| 02 | Donut | Positive `shift` on a circular kernel |
-| 03 | Half Circle | `bounds` clipping on X axis |
-| 04 | Moon | Clipped shifted ring |
-| 05 | Rectangle | `MIN` logic for sharp corners |
-| 06 | Ellipse | Independent N/S vs E/W decay |
-| 07 | Line | Extreme asymmetric decay |
-| 08 | Gradient | Low-decay wide sweep kernel |
-| 09 | Organic Cells | `PARABOLIC` modulation tessellation |
-| 10 | Ripples | `RAMP` concentric saw-tooth rings |
-| 11 | Waves | `TRIANGLE` frequency modulation |
-| 12 | Star | Four rotated ellipses at offsets |
-| 13 | Grid | `templates` + `groups` scatter |
-| 14 | Fractal | Deep abstract layered geometry |
-| 15 | Face | Hand-drawn portrait from clipped kernels |
+| 01 | Eclipse | `SQUARESUM` logic, corona + moon disc |
+| 02 | Plasma Web | `clamp_decay` bubble merging, weighted-average blending |
+| 03 | Organic Cells | `PARABOLIC` modulation tessellation |
+| 04 | Gradient Ring | `RAMP` modulation, `SQUARESUM` circular logic |
+| 05 | Layered Rings | `min_clamp`/`max_clamp` annulus shaping |
+| 06 | Sunset | Horizontal gradient layers, asymmetric decay |
+| 07 | Wave Interference | 3D bevelled ripples, `clamp_decay` soft circles, multi-source interference |
+| 08 | Portrait | Hand-drawn face from clipped kernels |
+| 09 | Fractal | Deep abstract layered geometry |
+| 10 | Grid | `templates` + `groups` scatter |
+| 11 | Star | Four rotated ellipses at offsets |
+| 12 | Waves | `TRIANGLE` frequency modulation |
+| 13 | Ellipse | Independent N/S vs E/W decay |
+| 14 | Moon | Clipped shifted ring |
+| 15 | Portrait (Hi-Res) | Complex face from many layered kernels |
 
 ---
 
@@ -166,3 +166,5 @@ See **[VKB_FORMAT_SPEC.md](VKB_FORMAT_SPEC.md)** for the complete field-by-field
 - **Subject Isolation** — background-matching cells are automatically culled from the binary output
 - **Extreme Compression** — 20 bytes per kernel + gzip; typical photos at < 0.1% of raw raster size
 - **Full JSON Scene Language** — modulators, shifts, 8-way decay, logic metrics, layers, groups, templates
+- **`clamp_decay`** — replaces hard `min_clamp`/`max_clamp` binary masks with a smooth euclidean fade, enabling circles and rings to merge organically like bubbles where their edges meet
+- **Weighted-Average Compositor** — kernels within a layer blend via `Σ(color × weight) / Σ(weight)`, producing order-independent, physically correct overlaps and constructive wave interference
