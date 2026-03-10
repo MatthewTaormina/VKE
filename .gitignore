@@ -28,3 +28,5 @@ test_out_2*.json
 
 # Gemini agent working directory
 .gemini/
+
+*.vkb
